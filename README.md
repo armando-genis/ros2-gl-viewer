@@ -2,7 +2,7 @@
 A lightweight, OpenGL-powered 3D visualization tool for ROS 2, ideal for SLAM, perception debugging and rapid prototyping
 
 
-![gl Screenshot](https://github.com/armando-genis/ros2-gl-viewer/tree/main/img/img2.png)
+![gl Screenshot](https://github.com/armando-genis/ros2-gl-viewer/blob/main/img/img2.png)
 
 ```bash
 sudo apt update
