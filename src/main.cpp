@@ -391,6 +391,10 @@ public:
         }
     }
 
+    // reference:
+    // - https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Tf2-Main.html
+    // - https://robotics.stackexchange.com/questions/95228/how-to-get-list-of-all-tf-frames-programatically
+    // - https://wiki.ros.org/tf/TfUsingPython
     void refresh_frame_list()
     {
         std::lock_guard<std::mutex> lock(frames_mutex_);
