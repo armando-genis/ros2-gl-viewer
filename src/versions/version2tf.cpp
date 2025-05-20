@@ -47,13 +47,9 @@
 class Ros2GLViewer : public guik::Application
 {
 public:
-    Ros2GLViewer(std::shared_ptr<rclcpp::Node> node) : guik::Application(), node_(node)
+    Ros2GLViewer(std::shared_ptr<rclcpp::Node> node) : guik::Application(), node_(node), tf2_buffer(node_->get_clock()), tf2_listener(tf2_buffer)
     {
         std::cout << "Basic Viewer Application initialized" << std::endl;
-        // Initialize TF2
-        tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock(), tf2::durationFromSec(10.0));
-
-        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         // Start ROS2 spinning thread
         last_topic_refresh_ = std::chrono::steady_clock::now() - topic_refresh_interval_ * 2;
@@ -193,43 +189,6 @@ public:
         ImGui::Text("Scroll pad: zoom");
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
 
-        if (ImGui::Button("Select Reference Frame"))
-        {
-            show_frames_window = !show_frames_window;
-            if (show_frames_window)
-            {
-                refresh_frame_list();
-            }
-        }
-
-        ImGui::SameLine();
-        ImGui::Text("Current frame: %s", fixed_frame_.c_str());
-
-        // Show frames window if enabled
-        if (show_frames_window)
-        {
-
-            // Check if we need to refresh
-            if (now - last_frame_refresh_ > frame_refresh_interval_)
-            {
-                refresh_frame_list();
-            }
-
-            // Display frames and allow selection
-            ImGui::Text("Available Frames:");
-            ImGui::Separator();
-
-            ImGui::BeginChild("FramesList", ImVec2(400, 100), true);
-            for (const auto &frame : available_frames_)
-            {
-                if (ImGui::Selectable(frame.c_str(), fixed_frame_ == frame))
-                {
-                    fixed_frame_ = frame;
-                }
-            }
-            ImGui::EndChild();
-        }
-
         // Button to toggle Topics window
         if (ImGui::Button("Show ROS2 Topics"))
         {
@@ -281,6 +240,43 @@ public:
 
                     ImGui::SameLine();
                     ImGui::TextUnformatted(name.c_str());
+                }
+            }
+            ImGui::EndChild();
+        }
+
+        if (ImGui::Button("Select Reference Frame"))
+        {
+            show_frames_window = !show_frames_window;
+            if (show_frames_window)
+            {
+                refresh_frame_list();
+            }
+        }
+
+        ImGui::SameLine();
+        ImGui::Text("Current frame: %s", fixed_frame_.c_str());
+
+        // Show frames window if enabled
+        if (show_frames_window)
+        {
+
+            // Check if we need to refresh
+            if (now - last_frame_refresh_ > frame_refresh_interval_)
+            {
+                refresh_frame_list();
+            }
+
+            // Display frames and allow selection
+            ImGui::Text("Available Frames:");
+            ImGui::Separator();
+
+            ImGui::BeginChild("FramesList", ImVec2(400, 100), true);
+            for (const auto &frame : available_frames_)
+            {
+                if (ImGui::Selectable(frame.c_str(), fixed_frame_ == frame))
+                {
+                    fixed_frame_ = frame;
                 }
             }
             ImGui::EndChild();
@@ -371,24 +367,21 @@ public:
                 if (types.empty())
                     continue; // should never happen
                 auto type_name = types[0];
-                try
-                {
-                    auto s = node_->create_generic_subscription(
-                        name, type_name, rclcpp::QoS(1),
-                        [this, name](std::shared_ptr<rclcpp::SerializedMessage>)
-                        {
-                            std::lock_guard<std::mutex> lk(topics_mutex_);
-                            last_msg_time_[name] = std::chrono::steady_clock::now();
-                        });
-                    subs_[name] = s;
-                    last_msg_time_[name] = std::chrono::steady_clock::time_point{};
-                }
-                catch (const std::exception &e)
-                {
-                    // std::cerr << "Failed to create subscription for topic " << name << ": " << e.what() << std::endl;
-                }
+
+                auto s = node_->create_generic_subscription(
+                    name, type_name, rclcpp::QoS(1),
+                    [this, name](std::shared_ptr<rclcpp::SerializedMessage>)
+                    {
+                        std::lock_guard<std::mutex> lk(topics_mutex_);
+                        last_msg_time_[name] = std::chrono::steady_clock::now();
+                    });
+                subs_[name] = s;
+                last_msg_time_[name] = std::chrono::steady_clock::time_point{};
             }
         }
+
+        // Stamp the refresh time
+        last_topic_refresh_ = std::chrono::steady_clock::now();
     }
 
     void refresh_frame_list()
@@ -399,7 +392,7 @@ public:
         std::string all_frames;
         try
         {
-            all_frames = tf_buffer_->allFramesAsString();
+            all_frames = tf2_buffer.allFramesAsString();
         }
         catch (const tf2::TransformException &ex)
         {
@@ -441,7 +434,7 @@ public:
             }
         }
 
-        // check if the frame-parent connection is valid
+        // check if the frame-parent connection is valid to know if the frame is still valied or alive
         available_frames_.clear();
         rclcpp::Time now = node_->get_clock()->now();
 
@@ -451,15 +444,10 @@ public:
             geometry_msgs::msg::Transform pose_tf;
             try
             {
+                std::cout << "Checking transform from '" << parent << "' to '" << frame << "'" << std::endl;
 
                 // Try to get the transform between this frame and its parent
-                pose_tf = tf_buffer_->lookupTransform(parent, frame, tf2::TimePointZero).transform;
-                available_frames_.push_back(frame);
-
-                if (std::find(available_frames_.begin(), available_frames_.end(), parent) == available_frames_.end())
-                {
-                    available_frames_.push_back(parent);
-                }
+                pose_tf = tf2_buffer.lookupTransform(parent, frame, tf2::TimePointZero).transform;
             }
             catch (const tf2::TransformException &ex)
             {
@@ -495,8 +483,8 @@ private:
     bool should_exit_ = false;
 
     // TF2 for frame transforms
-    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+    tf2_ros::Buffer tf2_buffer;
+    tf2_ros::TransformListener tf2_listener;
 
     // Currently selected frame
     std::mutex frames_mutex_;
@@ -539,3 +527,72 @@ int main(int argc, char **argv)
 
     return 0;
 }
+
+// // Parse the string to get individual frame names
+// std::unordered_map<std::string, std::string> frame_to_parent;
+// std::istringstream ss(all_frames);
+// std::string line;
+// while (std::getline(ss, line))
+// {
+//     // Skip empty lines
+//     if (line.empty())
+//         continue;
+
+//     // Check if the line matches the expected format
+//     if (line.find("Frame ") == 0 && line.find(" exists with parent ") != std::string::npos)
+//     {
+//         // Extract frame name between "Frame " and " exists with parent"
+//         size_t start_pos = 6; // Length of "Frame "
+//         size_t end_pos = line.find(" exists with parent");
+//         size_t parent_start = end_pos + std::string(" exists with parent ").size();
+
+//         if (end_pos != std::string::npos && end_pos > start_pos)
+//         {
+//             std::string frame_name = line.substr(start_pos, end_pos - start_pos);
+//             std::string parent_name = line.substr(parent_start);
+
+//             if (!parent_name.empty() && parent_name.back() == '.')
+//                 parent_name.pop_back();
+
+//             // std::cout << "Found frame: '" << frame_name << "' with parent: '" << parent_name << "'" << std::endl;
+//             frame_to_parent[frame_name] = parent_name;
+//         }
+//     }
+// }
+
+// // check if the frame-parent connection is valid to know if the frame is still valied or alive
+// available_frames_.clear();
+// rclcpp::Time now = node_->get_clock()->now();
+// rclcpp::Duration max_age = rclcpp::Duration::from_seconds(1.0);
+
+// for (const auto &[frame, parent] : frame_to_parent)
+// {
+
+//     geometry_msgs::msg::Transform pose_tf;
+//     try
+//     {
+//         std::cout << "Checking transform from '" << parent << "' to '" << frame << "'" << std::endl;
+
+//         // Try to get the transform between this frame and its parent
+//         // pose_tf = tf_buffer_->lookupTransform(parent, frame, tf2::TimePointZero).transform;
+
+//         auto stamped = tf_buffer_->lookupTransform(
+//             parent,            // your reference frame
+//             frame,             // the child frame
+//             tf2::TimePointZero // latest available
+//         );
+
+//         rclcpp::Time stamp{stamped.header.stamp};
+//         if ((now - stamp) <= max_age)
+//         {
+//             available_frames_.push_back(frame);
+//         }
+//     }
+//     catch (const tf2::TransformException &ex)
+//     {
+//         // If we can't get the transform, don't add to available frames
+//         std::cout << red << "Transform error: " << ex.what() << reset << std::endl;
+//     }
+// }
+
+// tf_buffer_->clear();

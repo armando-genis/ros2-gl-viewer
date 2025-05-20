@@ -193,43 +193,6 @@ public:
         ImGui::Text("Scroll pad: zoom");
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
 
-        if (ImGui::Button("Select Reference Frame"))
-        {
-            show_frames_window = !show_frames_window;
-            if (show_frames_window)
-            {
-                refresh_frame_list();
-            }
-        }
-
-        ImGui::SameLine();
-        ImGui::Text("Current frame: %s", fixed_frame_.c_str());
-
-        // Show frames window if enabled
-        if (show_frames_window)
-        {
-
-            // Check if we need to refresh
-            if (now - last_frame_refresh_ > frame_refresh_interval_)
-            {
-                refresh_frame_list();
-            }
-
-            // Display frames and allow selection
-            ImGui::Text("Available Frames:");
-            ImGui::Separator();
-
-            ImGui::BeginChild("FramesList", ImVec2(400, 100), true);
-            for (const auto &frame : available_frames_)
-            {
-                if (ImGui::Selectable(frame.c_str(), fixed_frame_ == frame))
-                {
-                    fixed_frame_ = frame;
-                }
-            }
-            ImGui::EndChild();
-        }
-
         // Button to toggle Topics window
         if (ImGui::Button("Show ROS2 Topics"))
         {
@@ -281,6 +244,43 @@ public:
 
                     ImGui::SameLine();
                     ImGui::TextUnformatted(name.c_str());
+                }
+            }
+            ImGui::EndChild();
+        }
+
+        if (ImGui::Button("Select Reference Frame"))
+        {
+            show_frames_window = !show_frames_window;
+            if (show_frames_window)
+            {
+                refresh_frame_list();
+            }
+        }
+
+        ImGui::SameLine();
+        ImGui::Text("Current frame: %s", fixed_frame_.c_str());
+
+        // Show frames window if enabled
+        if (show_frames_window)
+        {
+
+            // Check if we need to refresh
+            if (now - last_frame_refresh_ > frame_refresh_interval_)
+            {
+                refresh_frame_list();
+            }
+
+            // Display frames and allow selection
+            ImGui::Text("Available Frames:");
+            ImGui::Separator();
+
+            ImGui::BeginChild("FramesList", ImVec2(400, 100), true);
+            for (const auto &frame : available_frames_)
+            {
+                if (ImGui::Selectable(frame.c_str(), fixed_frame_ == frame))
+                {
+                    fixed_frame_ = frame;
                 }
             }
             ImGui::EndChild();
@@ -371,22 +371,16 @@ public:
                 if (types.empty())
                     continue; // should never happen
                 auto type_name = types[0];
-                try
-                {
-                    auto s = node_->create_generic_subscription(
-                        name, type_name, rclcpp::QoS(1),
-                        [this, name](std::shared_ptr<rclcpp::SerializedMessage>)
-                        {
-                            std::lock_guard<std::mutex> lk(topics_mutex_);
-                            last_msg_time_[name] = std::chrono::steady_clock::now();
-                        });
-                    subs_[name] = s;
-                    last_msg_time_[name] = std::chrono::steady_clock::time_point{};
-                }
-                catch (const std::exception &e)
-                {
-                    // std::cerr << "Failed to create subscription for topic " << name << ": " << e.what() << std::endl;
-                }
+
+                auto s = node_->create_generic_subscription(
+                    name, type_name, rclcpp::QoS(1),
+                    [this, name](std::shared_ptr<rclcpp::SerializedMessage>)
+                    {
+                        std::lock_guard<std::mutex> lk(topics_mutex_);
+                        last_msg_time_[name] = std::chrono::steady_clock::now();
+                    });
+                subs_[name] = s;
+                last_msg_time_[name] = std::chrono::steady_clock::time_point{};
             }
         }
     }
@@ -395,11 +389,75 @@ public:
     {
         std::lock_guard<std::mutex> lock(frames_mutex_);
 
-        // Get all frames from TF2
-        std::string all_frames;
         try
         {
-            all_frames = tf_buffer_->allFramesAsString();
+            // Get the complete YAML representation of the TF tree
+            std::string yaml_string = tf_buffer_->allFramesAsYAML();
+
+            // Clear previous frame list
+            available_frames_.clear();
+
+            // Parse the YAML to extract frame names and relationships
+            if (!yaml_string.empty())
+            {
+
+                std::istringstream yaml_stream(yaml_string);
+                std::string line;
+                std::string current_frame;
+
+                while (std::getline(yaml_stream, line))
+                {
+                    // Line with frame name
+                    if (!line.empty() && line[0] != ' ' && line[0] != '\t' && line.find(':') != std::string::npos)
+                    {
+                        current_frame = line.substr(0, line.find(':'));
+                        available_frames_.push_back(current_frame);
+                        std::cout << "Found frame: " << current_frame << std::endl;
+                    }
+
+                    // Line with parent info
+                    if (line.find("parent:") != std::string::npos)
+                    {
+                        size_t start = line.find('\'');
+                        size_t end = line.find('\'', start + 1);
+                        if (start != std::string::npos && end != std::string::npos)
+                        {
+                            std::string parent = line.substr(start + 1, end - start - 1);
+                            std::cout << "Found parent reference: " << parent << std::endl;
+
+                            // add parent to available frames if not already present
+                            if (std::find(available_frames_.begin(), available_frames_.end(), parent) == available_frames_.end())
+                            {
+                                available_frames_.push_back(parent);
+                                std::cout << green << "Adding missing parent frame: " << parent << reset << std::endl;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Print discovered frames
+            std::cout << "All frames (" << available_frames_.size() << "): ";
+            for (const auto &f : available_frames_)
+            {
+                std::cout << f << "  ";
+            }
+            std::cout << std::endl;
+
+            // Check for important frames
+            bool has_base_link = (std::find(available_frames_.begin(), available_frames_.end(), "base_link") != available_frames_.end());
+
+            if (!has_base_link)
+            {
+                std::cout << red << "WARNING: 'base_link' frame is missing but likely referenced as parent!" << reset << std::endl;
+                std::cout << yellow << "Consider running: ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 map base_link" << reset << std::endl;
+            }
+
+            // If frames were found, check TF tree integrity
+            if (!available_frames_.empty())
+            {
+                check_frame_connectivity();
+            }
         }
         catch (const tf2::TransformException &ex)
         {
@@ -407,68 +465,62 @@ public:
             return;
         }
 
-        // std::cout << "All frames: " << all_frames << std::endl;
+        last_frame_refresh_ = std::chrono::steady_clock::now();
+    }
 
-        // Parse the string to get individual frame names
-        std::unordered_map<std::string, std::string> frame_to_parent;
-        std::istringstream ss(all_frames);
-        std::string line;
-        while (std::getline(ss, line))
+    void check_frame_connectivity()
+    {
+        std::cout << "Checking frame connectivity for critical transforms:" << std::endl;
+
+        // Check the most important transformations
+        std::vector<std::pair<std::string, std::string>> critical_transforms;
+
+        // If base_link exists and we have other frames, check connectivity
+        auto it_base = std::find(available_frames_.begin(), available_frames_.end(), "base_link");
+        if (it_base != available_frames_.end())
         {
-            // Skip empty lines
-            if (line.empty())
-                continue;
-
-            // Check if the line matches the expected format
-            if (line.find("Frame ") == 0 && line.find(" exists with parent ") != std::string::npos)
+            for (const auto &frame : available_frames_)
             {
-                // Extract frame name between "Frame " and " exists with parent"
-                size_t start_pos = 6; // Length of "Frame "
-                size_t end_pos = line.find(" exists with parent");
-                size_t parent_start = end_pos + std::string(" exists with parent ").size();
-
-                if (end_pos != std::string::npos && end_pos > start_pos)
+                if (frame != "base_link")
                 {
-                    std::string frame_name = line.substr(start_pos, end_pos - start_pos);
-                    std::string parent_name = line.substr(parent_start);
-
-                    if (!parent_name.empty() && parent_name.back() == '.')
-                        parent_name.pop_back();
-
-                    // std::cout << "Found frame: '" << frame_name << "' with parent: '" << parent_name << "'" << std::endl;
-                    frame_to_parent[frame_name] = parent_name;
+                    critical_transforms.push_back({"base_link", frame});
                 }
             }
         }
 
-        // check if the frame-parent connection is valid
-        available_frames_.clear();
-        rclcpp::Time now = node_->get_clock()->now();
-
-        for (const auto &[frame, parent] : frame_to_parent)
+        // Check connectivity for each critical transform
+        for (const auto &pair : critical_transforms)
         {
+            bool can_transform = false;
+            std::string reason;
 
-            geometry_msgs::msg::Transform pose_tf;
             try
             {
+                // First try direct transform
+                can_transform = tf_buffer_->canTransform(pair.second, pair.first, tf2::TimePointZero);
 
-                // Try to get the transform between this frame and its parent
-                pose_tf = tf_buffer_->lookupTransform(parent, frame, tf2::TimePointZero).transform;
-                available_frames_.push_back(frame);
-
-                if (std::find(available_frames_.begin(), available_frames_.end(), parent) == available_frames_.end())
+                if (can_transform)
                 {
-                    available_frames_.push_back(parent);
+
+                    auto transform = tf_buffer_->lookupTransform(pair.second, pair.first, tf2::TimePointZero);
+                    auto &t = transform.transform.translation;
+                }
+                else
+                {
+                    reason = "canTransform returned false";
                 }
             }
             catch (const tf2::TransformException &ex)
             {
-                // If we can't get the transform, don't add to available frames
-                std::cout << red << "Transform error: " << ex.what() << reset << std::endl;
+                reason = ex.what();
+            }
+
+            if (!can_transform)
+            {
+                std::cout << red << "Transform " << pair.first << " -> " << pair.second
+                          << ": FAILED (" << reason << ")" << reset << std::endl;
             }
         }
-
-        last_frame_refresh_ = std::chrono::steady_clock::now();
     }
 
 private:

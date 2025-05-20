@@ -16,6 +16,10 @@ find_package(PCL REQUIRED)
 # ROS2 dependencies - without using ament
 find_package(rclcpp REQUIRED)
 find_package(pcl_conversions REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 
 # Find gl3w
 set(GL3W_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/gl3w)
@@ -35,6 +39,10 @@ include_directories(
     ${PCL_INCLUDE_DIRS}
     ${rclcpp_INCLUDE_DIRS}
     ${pcl_conversions_INCLUDE_DIRS}
+    ${std_msgs_LIBRARIES}
+    ${tf2_INCLUDE_DIRS}
+    ${tf2_ros_INCLUDE_DIRS}
+    ${tf2_geometry_msgs_INCLUDE_DIRS}
 )
 
 set(GLK_SOURCES
@@ -78,6 +86,10 @@ target_link_libraries(pointcloud_viewer
   ${PCL_LIBRARIES}
   ${rclcpp_LIBRARIES}
   ${pcl_conversions_LIBRARIES}
+  ${std_msgs_LIBRARIES}
+  ${tf2_LIBRARIES}
+  ${tf2_ros_LIBRARIES}
+  ${tf2_geometry_msgs_LIBRARIES}
   dl  # For gl3w dynamic loading
 )
 
