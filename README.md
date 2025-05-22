@@ -8,6 +8,9 @@ A lightweight, OpenGL-powered 3D visualization tool for ROS 2, ideal for SLAM, p
 sudo apt update
 sudo apt install ros-${ROS_DISTRO}-tf2-eigen
 sudo apt install -y libglm-dev libglfw3-dev libeigen3-dev
+sudo apt update
+sudo apt install libfreetype6-dev
+
 
 cd /ros2-gl-viewer/third_party
 
@@ -31,3 +34,7 @@ make
 ./pointcloud_viewer
 
 ```
+
+- https://github.com/rtryan98/OpenGL
+- https://glm.g-truc.net/0.9.9/index.html
+- https://github.com/EdoardoLuciani/OpenGL-4.5-Freetype-Example/blob/master/main.cpp

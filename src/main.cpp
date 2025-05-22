@@ -43,6 +43,25 @@
 
 #include <GLFW/glfw3.h>
 #include <imgui_impl_glfw.h>
+#include <GL/glut.h>
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
+static Eigen::Isometry3f toEigen(const geometry_msgs::msg::Transform &t)
+{
+    Eigen::Quaternionf q(t.rotation.w,
+                         t.rotation.x,
+                         t.rotation.y,
+                         t.rotation.z);
+    Eigen::Vector3f tr(t.translation.x,
+                       t.translation.y,
+                       t.translation.z);
+    Eigen::Isometry3f iso = Eigen::Isometry3f::Identity();
+    iso.rotate(q);
+    iso.pretranslate(tr);
+    return iso;
+}
 
 class Ros2GLViewer : public guik::Application
 {
@@ -149,6 +168,17 @@ public:
             return false;
         }
 
+        // Add these lines to check OpenGL version
+        const char *version = (const char *)glGetString(GL_VERSION);
+        const char *vendor = (const char *)glGetString(GL_VENDOR);
+        const char *renderer = (const char *)glGetString(GL_RENDERER);
+        const char *glsl_version_str = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
+
+        std::cout << "OpenGL Version: " << version << std::endl;
+        std::cout << "OpenGL Vendor: " << vendor << std::endl;
+        std::cout << "OpenGL Renderer: " << renderer << std::endl;
+        std::cout << "GLSL Version: " << glsl_version_str << std::endl;
+
         // Get shader directory
         std::string data_directory = "./data";
 
@@ -181,6 +211,8 @@ public:
     {
         // get the current time
         auto now = std::chrono::steady_clock::now();
+        // get the tf based on the frame
+        update_tf_transforms();
         // Show main canvas settings
         main_canvas_->draw_ui();
 
@@ -301,6 +333,22 @@ public:
         Eigen::Matrix4f view = camera_control_.view_matrix();
         main_canvas_->shader->set_uniform("view_matrix", view);
 
+        // // === View and Projection Matrices ===
+        // const Eigen::Matrix4f view = camera_control_.view_matrix();
+
+        // float aspect = float(framebuffer_size().x()) / framebuffer_size().y();
+        // float fov_y = 45.0f * M_PI / 180.0f;
+        // float z_near = 0.01f;
+        // float z_far = 100.0f;
+        // float f = 1.0f / std::tan(fov_y / 2.0f);
+
+        // Eigen::Matrix4f proj = Eigen::Matrix4f::Zero();
+        // proj(0, 0) = f / aspect;
+        // proj(1, 1) = f;
+        // proj(2, 2) = (z_far + z_near) / (z_near - z_far);
+        // proj(2, 3) = (2.0f * z_far * z_near) / (z_near - z_far);
+        // proj(3, 2) = -1.0f;
+
         // Draw coordinate system
         main_canvas_->shader->set_uniform("color_mode", 2);
         main_canvas_->shader->set_uniform("model_matrix", (Eigen::UniformScaling<float>(2.0f) * Eigen::Isometry3f::Identity()).matrix());
@@ -313,7 +361,26 @@ public:
         main_canvas_->shader->set_uniform("material_color", Eigen::Vector4f(0.8f, 0.8f, 0.8f, 1.0f));
         grid_->draw(*main_canvas_->shader);
 
-        // Add your custom rendering here
+        // Draw all TF frames if enabled
+        if (show_tf_frames_)
+        {
+
+            std::lock_guard<std::mutex> lock(tf_mutex_);
+
+            main_canvas_->shader->set_uniform("color_mode", 2); // Use coordinate system colors
+
+            for (const auto &[frame_id, transform] : frame_transforms_)
+            {
+                // Set the model matrix to position the coordinate system at the transform
+                Eigen::Matrix4f model_matrix = (transform * Eigen::Scaling(tf_frame_size_)).matrix();
+                main_canvas_->shader->set_uniform("model_matrix", model_matrix);
+
+                // Draw the coordinate system for this frame
+                coord.draw(*main_canvas_->shader);
+
+                // === Draw frame name ===
+            }
+        }
 
         main_canvas_->unbind();
         main_canvas_->render_to_screen();
@@ -467,12 +534,46 @@ public:
             }
             catch (const tf2::TransformException &ex)
             {
-                // If we can't get the transform, don't add to available frames
+                // If we can't get the transform, don't add to available frames (I mean this should be impossible)
                 std::cout << red << "Transform error: " << ex.what() << reset << std::endl;
             }
         }
 
         last_frame_refresh_ = std::chrono::steady_clock::now();
+    }
+
+    void update_tf_transforms()
+    {
+        std::lock_guard<std::mutex> lock(tf_mutex_);
+
+        // std::cout << green << "Updating TF transforms..." << reset << std::endl;
+
+        // Skip if no fixed frame is selected
+        if (fixed_frame_.empty())
+            return;
+
+        // Update transforms for each available frame
+        for (const auto &frame : available_frames_)
+        {
+            // Skip the fixed frame itself
+            if (frame == fixed_frame_)
+                continue;
+
+            try
+            {
+                // Get the transform from fixed frame to this frame
+                geometry_msgs::msg::TransformStamped transform_stamped =
+                    tf_buffer_->lookupTransform(fixed_frame_, frame, tf2::TimePointZero);
+
+                // Convert to Eigen transform using the helper function
+                frame_transforms_[frame] = toEigen(transform_stamped.transform);
+            }
+            catch (const tf2::TransformException &ex)
+            {
+                // If we can't get the transform, remove it from our map
+                frame_transforms_.erase(frame);
+            }
+        }
     }
 
 private:
@@ -523,6 +624,14 @@ private:
     std::chrono::milliseconds alive_threshold_{1000}; // e.g. 1.0s
 
     bool show_topics_window = false;
+
+    // TF visualization
+    bool show_tf_frames_ = true;
+    float tf_frame_size_ = 0.5f; // Size of the coordinate axes for each frame
+
+    // Store transforms from fixed frame to all other frames
+    std::mutex tf_mutex_;
+    std::unordered_map<std::string, Eigen::Isometry3f> frame_transforms_;
 };
 
 int main(int argc, char **argv)

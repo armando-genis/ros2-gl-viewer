@@ -12,6 +12,7 @@ find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
+find_package(Freetype REQUIRED)
 
 # ROS2 dependencies - without using ament
 find_package(rclcpp REQUIRED)
@@ -20,6 +21,7 @@ find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+
 
 # Find gl3w
 set(GL3W_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/gl3w)
@@ -43,6 +45,7 @@ include_directories(
     ${tf2_INCLUDE_DIRS}
     ${tf2_ros_INCLUDE_DIRS}
     ${tf2_geometry_msgs_INCLUDE_DIRS}
+    ${FREETYPE_INCLUDE_DIRS}
 )
 
 set(GLK_SOURCES
@@ -91,6 +94,7 @@ target_link_libraries(pointcloud_viewer
   ${tf2_ros_LIBRARIES}
   ${tf2_geometry_msgs_LIBRARIES}
   dl  # For gl3w dynamic loading
+  ${FREETYPE_LIBRARIES}
 )
 
 # Make sure the application finds the shader files
