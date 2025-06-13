@@ -8,25 +8,27 @@
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
 
-namespace glk {
+namespace glk
+{
 
-class PointCloudBuffer {
-public:
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    using Ptr = std::shared_ptr<PointCloudBuffer>;
+    class PointCloudBuffer
+    {
+    public:
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        using Ptr = std::shared_ptr<PointCloudBuffer>;
 
-    PointCloudBuffer(const std::string& cloud_filename);
-    PointCloudBuffer(const pcl::PointCloud<pcl::PointXYZI>::ConstPtr& cloud);
-    ~PointCloudBuffer();
+        PointCloudBuffer(const std::string &cloud_filename);
+        PointCloudBuffer(const pcl::PointCloud<pcl::PointXYZI>::ConstPtr &cloud);
+        ~PointCloudBuffer();
 
-    void draw(glk::GLSLShader& shader);
+        void draw(glk::GLSLShader &shader);
 
-private:
-    GLuint vao;
-    GLuint vbo;
-    int stride;
-    int num_points;
-};
+    private:
+        GLuint vao;
+        GLuint vbo;
+        int stride;
+        int num_points;
+    };
 
 }
 

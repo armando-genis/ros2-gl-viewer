@@ -30,6 +30,7 @@
 #include <Eigen/Geometry>
 
 // GLK and GUIK libraries
+#include <glk/pointcloud_buffer.hpp>
 #include <glk/primitives/primitives.hpp>
 #include <glk/lines.hpp>
 #include <glk/colormap.hpp>
@@ -68,13 +69,8 @@ struct CloudTopic
     std::string topic_name;
     std::string frame_id;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub;
-    pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
+    std::shared_ptr<glk::PointCloudBuffer> buffer;
     Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
-    std::vector<Eigen::Vector3f> debug_pts;
-
-    GLuint vao = 0;
-    GLuint vbo = 0;
-    size_t num_points = 0;
 };
 
 class Ros2GLViewer : public guik::Application
@@ -332,61 +328,10 @@ public:
             {
                 ImGui::Text("Subscribe to:");
                 ImGui::SameLine();
-                if (ImGui::Button("+ Add"))
+                if (ImGui::Button("➕ Add"))
                 {
                     addPointCloudTopic(topic_names_[selected_topic_idx_]);
                 }
-                if (ImGui::Button("- Remove"))
-                {
-                    std::cout << red << "Removing topic: " << topic_names_[selected_topic_idx_] << reset << std::endl;
-                    removePointCloudTopic(topic_names_[selected_topic_idx_]);
-                    selected_topic_idx_ = -1;
-                }
-            }
-        }
-
-        static bool show_load_input = false;
-        static char filepath[256] = "";
-        static int selected_ply_frame = 0;
-
-        if (ImGui::Button("Load PLY"))
-        {
-            show_load_input = !show_load_input;
-        }
-
-        // /workspace/models/Buggy.ply
-        if (show_load_input)
-        {
-            ImGui::InputText("PLY File", filepath, sizeof(filepath));
-            ImGui::Separator();
-            ImGui::Text("Assign to TF frame:");
-            ImGui::SameLine();
-            if (!available_frames_.empty())
-            {
-                const char *preview = available_frames_[selected_ply_frame].c_str();
-                if (ImGui::BeginCombo("##ply_frames", preview))
-                {
-                    for (int n = 0; n < (int)available_frames_.size(); ++n)
-                    {
-                        bool is_selected = (selected_ply_frame == n);
-                        if (ImGui::Selectable(available_frames_[n].c_str(), is_selected))
-                        {
-                            selected_ply_frame = n;
-                        }
-                        if (is_selected)
-                            ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
-            }
-            else
-            {
-                ImGui::TextDisabled("No TF frames");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Open"))
-            {
-                show_load_input = false; // hide input after loading
             }
         }
 
@@ -398,15 +343,13 @@ public:
         // 1) bind offscreen framebuffer
         main_canvas_->bind();
 
+        // 2) clear & GL state
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_PROGRAM_POINT_SIZE);
-
-        // 2) clear & GL state
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // set point size for point clouds
-        glPointSize(4.0f);
+        glDisable(GL_PROGRAM_POINT_SIZE);
+        glPointSize(7.0f);
 
         // 1) Compute View matrix
         Eigen::Matrix4f view = camera_control_.view_matrix();
@@ -470,78 +413,83 @@ public:
         // 8) now always draw your point clouds in white
         {
             std::lock_guard lk(cloud_topics_mutex_);
-            // set uniform color-mode to “flat color”
-            shader.set_uniform("color_mode", 0);
+            shader.set_uniform("color_mode", 1);
+            shader.set_uniform("material_color", Eigen::Vector4f(1, 1, 1, 1));
 
-            // 1) One-time VAO+VBO creation
-            if (dbgVao == 0)
-            {
-                glGenVertexArrays(1, &dbgVao);
-                glGenBuffers(1, &dbgVbo);
-
-                glBindVertexArray(dbgVao);
-                glBindBuffer(GL_ARRAY_BUFFER, dbgVbo);
-
-                // allocate a reasonable initial capacity (e.g. room for 200k points)
-                const size_t initial_capacity = 200000;
-                glBufferData(
-                    GL_ARRAY_BUFFER,
-                    initial_capacity * sizeof(pcl::PointXYZI),
-                    nullptr,
-                    GL_DYNAMIC_DRAW);
-
-                // attribute 0 = vec3 position, offset 0, stride = sizeof(PointXYZI)
-                glEnableVertexAttribArray(0);
-                glVertexAttribPointer(
-                    0,                      // index
-                    3,                      // x, y, z
-                    GL_FLOAT,               // type
-                    GL_FALSE,               // normalized?
-                    sizeof(pcl::PointXYZI), // stride
-                    (void *)0               // offset
-                );
-
-                glBindVertexArray(0);
-                std::cout << green
-                          << "Created debug VAO/VBO for PointXYZI clouds"
-                          << reset
-                          << std::endl;
-            }
-
-            // 2) Render each cloud
             for (auto &ct : cloud_topics_)
             {
-                if (!ct->cloud || ct->cloud->empty())
-                    continue;
+                // ct.transform is the LiDAR→world transform you fetched from TF
+                Eigen::Matrix4f PO = Eigen::Matrix4f::Identity();
+                shader.set_uniform("model_matrix", PO);
 
-                size_t n = ct->cloud->size();
-                // std::cout << "[PC_CB IN RENDER] "
-                //           << ct->topic_name
-                //           << " → "
-                //           << n
-                //           << " pts\n";
+                // now draw the points in *that* frame
+                ct.buffer->draw();
+            }
 
-                // draw the per-cloud VAO
-                shader.set_uniform("model_matrix", ct->transform.matrix());
-                glBindVertexArray(ct->vao);
-                glDrawArrays(GL_POINTS, 0, GLsizei(n));
-                glBindVertexArray(0);
-
-                // update the debug VBO with the same PointXYZI data
-                glBindBuffer(GL_ARRAY_BUFFER, dbgVbo);
-                glBufferSubData(
-                    GL_ARRAY_BUFFER,
-                    0, // offset
-                    n * sizeof(pcl::PointXYZI),
-                    ct->cloud->points.data());
-                glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-                // draw the debug VAO with the same count
+            // ── one-point debug draw ──
+            static GLuint dbgVao = 0;
+            if (dbgVao == 0)
+            {
+                // first time only: build a VAO/VBO for a single vertex at the origin
+                float pt[3] = {1.f, 1.f, 1.f};
+                glGenVertexArrays(1, &dbgVao);
                 glBindVertexArray(dbgVao);
-                glDrawArrays(GL_POINTS, 0, GLsizei(n));
+                GLuint dbgVbo;
+                glGenBuffers(1, &dbgVbo);
+                glBindBuffer(GL_ARRAY_BUFFER, dbgVbo);
+                glBufferData(GL_ARRAY_BUFFER, sizeof(pt), pt, GL_STATIC_DRAW);
+                // attribute 0 = position, 3 floats, tightly packed
+                glEnableVertexAttribArray(0);
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void *)0);
                 glBindVertexArray(0);
             }
+
+            // now draw exactly one point at (0,0,0)
+            glBindVertexArray(dbgVao);
+            glDrawArrays(GL_POINTS, 0, 1);
+            glBindVertexArray(0);
+
+            // ── three-point debug draw ──
+            static GLuint dbgVao = 0;
+            if (dbgVao == 0)
+            {
+                // first time only: build a VAO/VBO for three vertices
+                // e.g. points at (1,1,1), (2,2,2) and (3,3,3)
+                float pts[9] = {
+                    1.f, 1.f, 1.f,
+                    2.f, 2.f, 2.f,
+                    3.f, 3.f, 3.f};
+                glGenVertexArrays(1, &dbgVao);
+                glBindVertexArray(dbgVao);
+
+                GLuint dbgVbo;
+                glGenBuffers(1, &dbgVbo);
+                glBindBuffer(GL_ARRAY_BUFFER, dbgVbo);
+                glBufferData(
+                    GL_ARRAY_BUFFER,
+                    sizeof(pts),
+                    pts,
+                    GL_STATIC_DRAW);
+
+                // attribute 0 = position, 3 floats per vertex
+                glEnableVertexAttribArray(0);
+                glVertexAttribPointer(
+                    /*index=*/0,
+                    /*size=*/3,
+                    /*type=*/GL_FLOAT,
+                    /*normalized=*/GL_FALSE,
+                    /*stride=*/0,
+                    /*pointer=*/(void *)0);
+
+                glBindVertexArray(0);
+            }
+
+            // later, in draw_gl():
+            glBindVertexArray(dbgVao);
+            glDrawArrays(GL_POINTS, /*first=*/0, /*count=*/3);
+            glBindVertexArray(0);
         }
+
         // 9) unbind & blit
         main_canvas_->unbind();
         main_canvas_->render_to_screen();
@@ -722,99 +670,50 @@ public:
 
             try
             {
-                // Get the transform from fixed frame to the frame
+                // Get the transform from fixed frame to this frame
                 geometry_msgs::msg::TransformStamped transform_stamped =
                     tf_buffer_->lookupTransform(fixed_frame_, frame, tf2::TimePointZero);
 
-                // Convert to Eigen transform
+                // Convert to Eigen transform using the helper function
                 frame_transforms_[frame] = toEigen(transform_stamped.transform);
             }
             catch (const tf2::TransformException &ex)
             {
-                // If can't get the transform, remove it from the map
+                // If we can't get the transform, remove it from our map
                 frame_transforms_.erase(frame);
             }
         }
     }
 
-    void removePointCloudTopic(const std::string &topic)
-    {
-        std::lock_guard lk(cloud_topics_mutex_);
-        for (auto it = cloud_topics_.begin(); it != cloud_topics_.end(); ++it)
-        {
-            if ((*it)->topic_name == topic)
-            {
-                std::cout << red << "Removing topic: " << topic << reset << std::endl;
-                (*it)->sub.reset();
-                cloud_topics_.erase(it);
-                return;
-            }
-        }
-        std::cout << red << "Topic not found: " << topic << reset << std::endl;
-    }
-
     void addPointCloudTopic(const std::string &topic)
     {
-        // avoid duplicates
+        // Avoid duplicates
         {
             std::lock_guard lk(cloud_topics_mutex_);
-            for (auto &ct_ptr : cloud_topics_)
-                if (ct_ptr->topic_name == topic)
+            for (auto &ct : cloud_topics_)
+                if (ct.topic_name == topic)
                     return;
         }
 
-        // create a new CloudTopic and initialize its cloud pointer
-        auto ct = std::make_shared<CloudTopic>();
-        ct->topic_name = topic;
-        ct->cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
+        // 1) Start with an empty cloud
+        auto empty = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
+        auto buffer = std::make_shared<glk::PointCloudBuffer>(empty);
 
-        // subscription callback
-        ct->sub = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-            topic, rclcpp::SensorDataQoS(),
-            [this, ct, topic](sensor_msgs::msg::PointCloud2::UniquePtr msg)
+        // 2) Subscribe & update on message
+        auto sub = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
+            topic, rclcpp::QoS(1),
+            [buffer, topic](sensor_msgs::msg::PointCloud2::UniquePtr msg)
             {
-                // build a fresh cloud
-                auto new_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
-                pcl::fromROSMsg(*msg, *new_cloud);
-
-                if (new_cloud->empty())
-                {
-                    std::cout << "[PC_CB] " << topic << " → empty cloud\n";
-                    return;
-                }
-
-                {
-                    std::lock_guard lk(cloud_topics_mutex_);
-                    ct->cloud = new_cloud;
-                    ct->frame_id = msg->header.frame_id;
-                    ct->debug_pts.clear();
-                    for (size_t i = 0; i < 10 && i < ct->cloud->size(); ++i)
-                        ct->debug_pts.emplace_back(
-                            ct->cloud->points[i].x,
-                            ct->cloud->points[i].y,
-                            ct->cloud->points[i].z);
-                    ct->num_points = ct->debug_pts.size();
-
-                    try
-                    {
-                        auto tf_stamped = tf_buffer_->lookupTransform(
-                            fixed_frame_, ct->frame_id, tf2::TimePointZero);
-                        ct->transform = toEigen(tf_stamped.transform);
-                    }
-                    catch (...)
-                    { /* leave identity */
-                    }
-                }
-
-                // std::cout << "[PC_CB] " << topic
-                //           << " → " << ct->cloud->size() << " pts"
-                //           << "  (debug_pts=" << ct->debug_pts.size() << ")\n";
+                pcl::PointCloud<pcl::PointXYZI> tmp;
+                pcl::fromROSMsg(*msg, tmp);
+                std::cout << "[PC_CB] " << topic << " → " << tmp.size() << " pts\n";
+                buffer->update(tmp);
             });
 
-        // store the new topic
+        // 3) Store
         {
             std::lock_guard lk(cloud_topics_mutex_);
-            cloud_topics_.push_back(ct);
+            cloud_topics_.push_back({topic, sub, buffer});
         }
     }
 
@@ -869,20 +768,15 @@ private:
 
     // TF visualization
     bool show_tf_frames_ = true;
-    float tf_frame_size_ = 0.4f; // Size of the coordinate axes for each frame
+    float tf_frame_size_ = 0.5f; // Size of the coordinate axes for each frame
 
     // Store transforms from fixed frame to all other frames
     std::mutex tf_mutex_;
     std::unordered_map<std::string, Eigen::Isometry3f> frame_transforms_;
 
-    // std::vector<CloudTopic> cloud_topics_;
-    std::vector<std::shared_ptr<CloudTopic>> cloud_topics_;
+    std::vector<CloudTopic> cloud_topics_;
     std::mutex cloud_topics_mutex_;
     int selected_topic_idx_{-1};
-
-    // point cloud VAO/VBO
-    GLuint dbgVao = 0;
-    GLuint dbgVbo = 0;
 };
 
 int main(int argc, char **argv)

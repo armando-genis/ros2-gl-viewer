@@ -6,6 +6,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+
+
 # Find required packages
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
@@ -22,9 +24,6 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 
-# load 3d graphics libraries (Assimp)
-find_package(assimp REQUIRED) 
-include_directories(${ASSIMP_INCLUDE_DIRS})
 
 # Find gl3w
 set(GL3W_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/gl3w)
@@ -35,6 +34,45 @@ set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
 include_directories(${IMGUI_DIR})
 set(IMGUI_IMPL_DIR ${IMGUI_DIR}/backends)
 include_directories(${IMGUI_IMPL_DIR})
+
+#set PointCloudRendering directory
+set(POINTCLOUD_RENDERING_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/PointCloudRendering/PointCloudRendering)
+
+# set FastNoise2 directory
+set(FASTNOISE2_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/FastNoise2)
+
+
+include_directories(
+
+  ${POINTCLOUD_RENDERING_DIR}/Source
+
+  ${POINTCLOUD_RENDERING_DIR}/Source/Geometry
+  ${POINTCLOUD_RENDERING_DIR}/Source/Geometry/2D
+  ${POINTCLOUD_RENDERING_DIR}/Source/Geometry/3D
+  ${POINTCLOUD_RENDERING_DIR}/Source/Geometry/Animation
+  ${POINTCLOUD_RENDERING_DIR}/Source/Geometry/General
+
+  ${POINTCLOUD_RENDERING_DIR}/Source/Graphics
+  ${POINTCLOUD_RENDERING_DIR}/Source/Interface
+  ${POINTCLOUD_RENDERING_DIR}/Source/Utilities
+  ${POINTCLOUD_RENDERING_DIR}/Source/PrecompiledHeaders
+
+
+  ${POINTCLOUD_RENDERING_DIR}/Libraries
+  ${POINTCLOUD_RENDERING_DIR}/Libraries/lodepng
+  # ${POINTCLOUD_RENDERING_DIR}/Libraries/imgui
+  # ${POINTCLOUD_RENDERING_DIR}/Libraries/imgui/examples
+  ${POINTCLOUD_RENDERING_DIR}/Libraries/imfiledialog
+  ${POINTCLOUD_RENDERING_DIR}/Libraries/imnodes
+  # ${POINTCLOUD_RENDERING_DIR}/Libraries/implot
+  ${POINTCLOUD_RENDERING_DIR}/Libraries/tinyply
+  ${POINTCLOUD_RENDERING_DIR}/Libraries/objloader
+  ${POINTCLOUD_RENDERING_DIR}/Libraries/spline
+
+  ${FASTNOISE2_DIR}/include
+  ${FASTNOISE2_DIR}/src
+
+)
 
 # Include directories
 include_directories(
@@ -59,7 +97,6 @@ set(GLK_SOURCES
   src/glk/mesh.cpp
   src/glk/pointcloud_buffer.cpp
   src/glk/loaders/ply_loader.cpp
-  src/glk/loaders/ply_loader_ros.cpp
   src/glk/primitives/primitives.cpp
 )
 
@@ -70,6 +107,10 @@ set(GUIK_SOURCES
   src/guik/imgui_application.cpp
   src/guik/model_control.cpp
   src/guik/projection_control.cpp
+)
+
+file(GLOB_RECURSE POINTCLOUD_RENDERING_SOURCES
+  "${POINTCLOUD_RENDERING_DIR}/Source/*.cpp"
 )
 
 add_executable(pointcloud_viewer
@@ -84,6 +125,7 @@ add_executable(pointcloud_viewer
   ${IMGUI_DIR}/imgui_widgets.cpp
   ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
   ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+  ${POINTCLOUD_RENDERING_SOURCES}
 )
 
 # Link libraries
@@ -99,7 +141,6 @@ target_link_libraries(pointcloud_viewer
   ${tf2_geometry_msgs_LIBRARIES}
   dl  # For gl3w dynamic loading
   ${FREETYPE_LIBRARIES}
-  ${ASSIMP_LIBRARIES}
 )
 
 # Make sure the application finds the shader files

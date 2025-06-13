@@ -10,6 +10,8 @@ sudo apt install ros-${ROS_DISTRO}-tf2-eigen
 sudo apt install -y libglm-dev libglfw3-dev libeigen3-dev
 sudo apt update
 sudo apt install libfreetype6-dev
+sudo apt install libglfw3-dev libglew-dev libglm-dev libglu1-mesa-dev freeglut3-dev
+sudo apt-get install libassimp-dev
 
 
 cd /ros2-gl-viewer/third_party
@@ -38,3 +40,12 @@ make
 - https://github.com/rtryan98/OpenGL
 - https://glm.g-truc.net/0.9.9/index.html
 - https://github.com/EdoardoLuciani/OpenGL-4.5-Freetype-Example/blob/master/main.cpp
+
+
+
+in the /stdafx.h
+
+#include "FastNoise/FastNoise.h"
+#include "FastNoise/Metadata.h"
+
+
