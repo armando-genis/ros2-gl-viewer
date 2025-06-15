@@ -81,6 +81,13 @@ struct CloudTopic
     size_t num_points = 0;
 };
 
+// struct PlyMesh
+// {
+//     GLuint vao = 0;
+//     GLuint vbo = 0;
+//     size_t vertex_count = 0;
+// };
+
 struct PlyMesh
 {
     GLuint vao = 0;
@@ -88,7 +95,6 @@ struct PlyMesh
     GLuint ebo = 0; // Element buffer object
     size_t vertex_count = 0;
     size_t index_count = 0; // Total number of indices
-    std::string frame_id;
 };
 
 class Ros2GLViewer : public guik::Application
@@ -241,7 +247,6 @@ public:
         auto now = std::chrono::steady_clock::now();
         // get the tf based on the frame
         update_tf_transforms();
-
         // Show main canvas settings
         main_canvas_->draw_ui();
 
@@ -269,10 +274,13 @@ public:
         // Show frames window if enabled
         if (show_frames_window)
         {
+
+            // Check if we need to refresh
             if (now - last_frame_refresh_ > frame_refresh_interval_)
             {
                 refresh_frame_list();
             }
+
             // Display frames and allow selection
             ImGui::Text("Available Frames:");
             ImGui::Separator();
@@ -303,11 +311,13 @@ public:
         // Show topics window if enabled
         if (show_topics_window)
         {
+
             // Check if we need to refresh
             if (now - last_topic_refresh_ > topic_refresh_interval_)
             {
                 refresh_topic_list();
             }
+
             // Display topics - just the names
             ImGui::Text("Available ROS2 Topics:");
             ImGui::Separator();
@@ -385,9 +395,6 @@ public:
         }
 
         // /workspace/models/Buggy.ply
-        // /workspace/models/miniBuggy.ply
-        // /workspace/models/miniBuggy_2.ply
-
         if (show_load_input)
         {
             ImGui::InputText("PLY File", filepath, sizeof(filepath));
@@ -419,26 +426,8 @@ public:
             ImGui::SameLine();
             if (ImGui::Button("Open"))
             {
-                try
-                {
-                    loaded_mesh = loadPlyBinaryLE(filepath);
-                    mesh_loaded = true;
-                    const std::string &frame_id = available_frames_[selected_ply_frame];
-
-                    std::cout << green
-                              << "Loaded PLY mesh from: "
-                              << filepath
-                              << " into frame: "
-                              << frame_id
-                              << reset
-                              << std::endl;
-
-                    loaded_mesh.frame_id = frame_id;
-                }
-                catch (const std::exception &e)
-                {
-                    std::cerr << "PLY load error: " << e.what() << std::endl;
-                }
+                loaded_mesh = loadPlyBinaryLE(filepath);
+                mesh_loaded = true;
                 show_load_input = false; // hide input after loading
             }
         }
@@ -512,7 +501,6 @@ public:
             shader.set_uniform("color_mode", 2);
             const auto &coord = glk::Primitives::instance()
                                     ->primitive(glk::Primitives::COORDINATE_SYSTEM);
-
             for (auto &p : frame_transforms_)
             {
                 shader.set_uniform("model_matrix",
@@ -611,16 +599,9 @@ public:
 
         if (mesh_loaded)
         {
-            Eigen::Isometry3f model = Eigen::Isometry3f::Identity();
-            {
-                std::lock_guard<std::mutex> lk(tf_mutex_);
-                auto it = frame_transforms_.find(loaded_mesh.frame_id);
-                if (it != frame_transforms_.end())
-                    model = it->second;
-            }
-
             shader.set_uniform("color_mode", 0);
-            shader.set_uniform("model_matrix", model.matrix());
+            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+            shader.set_uniform("model_matrix", T.matrix());
 
             glBindVertexArray(loaded_mesh.vao);
             // Draw triangles using the EBO
@@ -764,30 +745,31 @@ public:
         }
 
         // check if the frame-parent connection is valid
-
+        available_frames_.clear();
         rclcpp::Time now = node_->get_clock()->now();
 
-        available_frames_.clear();
         for (const auto &[frame, parent] : frame_to_parent)
         {
-            available_frames_.push_back(frame);
-            if (std::find(available_frames_.begin(), available_frames_.end(), parent) == available_frames_.end())
+
+            geometry_msgs::msg::Transform pose_tf;
+            try
             {
-                available_frames_.push_back(parent);
+
+                // Try to get the transform between this frame and its parent
+                pose_tf = tf_buffer_->lookupTransform(parent, frame, tf2::TimePointZero).transform;
+                available_frames_.push_back(frame);
+
+                if (std::find(available_frames_.begin(), available_frames_.end(), parent) == available_frames_.end())
+                {
+                    available_frames_.push_back(parent);
+                }
+            }
+            catch (const tf2::TransformException &ex)
+            {
+                // If we can't get the transform, don't add to available frames (I mean this should be impossible)
+                std::cout << red << "Transform error: " << ex.what() << reset << std::endl;
             }
         }
-
-        // Remove duplicates
-        std::sort(available_frames_.begin(), available_frames_.end());
-        available_frames_.erase(
-            std::unique(available_frames_.begin(), available_frames_.end()),
-            available_frames_.end());
-
-        // std::cout << green << "Available frames: " << available_frames_.size() << reset << std::endl;
-        // for (const auto &frame : available_frames_)
-        // {
-        //     std::cout << green << " - " << frame << reset << std::endl;
-        // }
 
         last_frame_refresh_ = std::chrono::steady_clock::now();
     }
@@ -795,35 +777,35 @@ public:
     void update_tf_transforms()
     {
         std::lock_guard<std::mutex> lock(tf_mutex_);
-        // Skip if no fixed frame selected
+
+        // std::cout << green << "Updating TF transforms..." << reset << std::endl;
+
+        // Skip if no fixed frame is selected
         if (fixed_frame_.empty())
             return;
 
-        frame_transforms_.clear();
-        // Refresh transforms for each available frame
+        // Update transforms for each available frame
         for (const auto &frame : available_frames_)
         {
+            // Skip the fixed frame itself
             if (frame == fixed_frame_)
                 continue;
 
             try
             {
-                auto tf_stamped = tf_buffer_->lookupTransform(
-                    fixed_frame_,      // target frame
-                    frame,             // source frame
-                    tf2::TimePointZero // latest
-                );
-                frame_transforms_[frame] = toEigen(tf_stamped.transform);
+                // Get the transform from fixed frame to the frame
+                geometry_msgs::msg::TransformStamped transform_stamped =
+                    tf_buffer_->lookupTransform(fixed_frame_, frame, tf2::TimePointZero);
+
+                // Convert to Eigen transform
+                frame_transforms_[frame] = toEigen(transform_stamped.transform);
             }
-            catch (const tf2::TransformException &)
+            catch (const tf2::TransformException &ex)
             {
-                // Remove on failure
+                // If can't get the transform, remove it from the map
                 frame_transforms_.erase(frame);
             }
         }
-
-        // print size of frame_transforms_
-        // std::cout << green << "TF Transforms: " << frame_transforms_.size() << reset << std::endl;
     }
 
     void removePointCloudTopic(const std::string &topic)
@@ -940,6 +922,74 @@ public:
             has_pcd_setted = true;
         }
     }
+
+    // PlyMesh loadPlyBinaryLE(const std::string &path)
+    // {
+    //     std::ifstream in{path, std::ios::binary};
+    //     if (!in)
+    //         throw std::runtime_error("Failed to open PLY: " + path);
+
+    //     // 1) Read header
+    //     std::string line;
+    //     size_t vertex_count = 0;
+    //     bool binary_little_endian = false;
+    //     while (std::getline(in, line))
+    //     {
+    //         if (line.rfind("format binary_little_endian", 0) == 0)
+    //             binary_little_endian = true;
+
+    //         if (line.rfind("element vertex", 0) == 0)
+    //         {
+    //             std::istringstream ss(line);
+    //             std::string elem;
+    //             ss >> elem >> elem >> vertex_count;
+    //         }
+
+    //         if (line == "end_header")
+    //             break;
+    //     }
+    //     if (!binary_little_endian)
+    //         throw std::runtime_error("Only binary_little_endian PLY supported");
+
+    //     // 2) Read vertex data (assume float x,y,z only)
+    //     struct Vertex
+    //     {
+    //         float x, y, z;
+    //     };
+    //     std::vector<Vertex> verts(vertex_count);
+    //     in.read(reinterpret_cast<char *>(verts.data()), vertex_count * sizeof(Vertex));
+    //     if (!in)
+    //         throw std::runtime_error("Unexpected EOF in PLY data");
+
+    //     // debug output
+    //     std::cout << green << "Loaded PLY: " << path
+    //               << " with " << vertex_count << " vertices" << reset << std::endl;
+
+    //     // 3) Upload to OpenGL
+    //     PlyMesh mesh;
+    //     mesh.vertex_count = vertex_count;
+    //     glGenVertexArrays(1, &mesh.vao);
+    //     glGenBuffers(1, &mesh.vbo);
+
+    //     glBindVertexArray(mesh.vao);
+    //     glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
+    //     glBufferData(GL_ARRAY_BUFFER,
+    //                  verts.size() * sizeof(Vertex),
+    //                  verts.data(),
+    //                  GL_STATIC_DRAW);
+
+    //     glEnableVertexAttribArray(0);
+    //     glVertexAttribPointer(
+    //         0, // layout location 0
+    //         3, // x,y,z
+    //         GL_FLOAT,
+    //         GL_FALSE,
+    //         sizeof(Vertex),
+    //         (void *)0);
+    //     glBindVertexArray(0);
+
+    //     return mesh;
+    // }
 
     PlyMesh loadPlyBinaryLE(const std::string &path)
     {

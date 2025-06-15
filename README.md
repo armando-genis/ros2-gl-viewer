@@ -49,3 +49,14 @@ in the /stdafx.h
 #include "FastNoise/Metadata.h"
 
 
+
+Found frame: zedd with parent: base_link
+Found frame: vectornav with parent: base_link
+Found frame: velodyne with parent: base_link
+Found frame: base_footprint with parent: base_link
+
+Found frame: 'zedd' with parent: 'base_link'
+Found frame: 'velodyne' with parent: 'base_link'
+Found frame: 'base_footprint' with parent: 'base_link'
+Found frame: 'vectornav' with parent: 'base_link'
+
