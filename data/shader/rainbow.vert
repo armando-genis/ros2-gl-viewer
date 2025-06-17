@@ -17,6 +17,7 @@ in vec3 vert_position;
 in vec3 vert_direction;     // line direction
 in vec4 vert_color;
 in ivec4 vert_info;
+layout(location = 4) in vec3 vert_rgb;
 
 out vec4 frag_color;
 flat out ivec4 frag_info;
@@ -64,6 +65,8 @@ void main() {
     } else if(color_mode == 2) {
         frag_color = vert_color;
         frag_info = vert_info;
+    } else if(color_mode == 4) {
+        frag_color = vec4(vert_rgb, 1.0); // Use per-vertex color
     }
 
     vec3 ndc = gl_Position.xyz / gl_Position.w;

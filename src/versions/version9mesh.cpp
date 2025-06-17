@@ -953,22 +953,22 @@ public:
         if (!in)
             throw std::runtime_error("Failed to open PLY: " + path);
 
+        // --- 1) Parse header, collect vertex property names ---
         bool binary_le = false;
         size_t vertex_count = 0, face_count = 0;
-        struct Property
-        {
-            std::string name, type;
-        };
-        std::vector<Property> vertexProps;
+        std::vector<std::string> vertexProps;
         bool inVertexElement = false;
         std::string line;
 
-        size_t idxX = -1, idxY = -1, idxZ = -1, idxR = -1, idxG = -1, idxB = -1;
+        // Track color property indices
+        size_t idxR = -1, idxG = -1, idxB = -1;
 
         while (std::getline(in, line))
         {
             if (line.rfind("format", 0) == 0 && line.find("binary_little_endian") != std::string::npos)
+            {
                 binary_le = true;
+            }
             if (line.rfind("element vertex", 0) == 0)
             {
                 std::istringstream ss(line);
@@ -988,13 +988,7 @@ public:
                 std::istringstream ss(line);
                 std::string prop, type, name;
                 ss >> prop >> type >> name;
-                vertexProps.push_back({name, type});
-                if (name == "x")
-                    idxX = vertexProps.size() - 1;
-                if (name == "y")
-                    idxY = vertexProps.size() - 1;
-                if (name == "z")
-                    idxZ = vertexProps.size() - 1;
+                vertexProps.push_back(name);
                 if (name == "red")
                     idxR = vertexProps.size() - 1;
                 if (name == "green")
@@ -1002,6 +996,7 @@ public:
                 if (name == "blue")
                     idxB = vertexProps.size() - 1;
             }
+
             if (line == "end_header")
                 break;
         }
@@ -1011,6 +1006,28 @@ public:
         if (vertexProps.size() < 3)
             throw std::runtime_error("PLY header: need at least x,y,z properties");
 
+        // --- 2) Find the offsets of x,y,z in the property list ---
+        auto findIndex = [&](const std::string &n)
+        {
+            auto it = std::find(vertexProps.begin(), vertexProps.end(), n);
+            if (it == vertexProps.end())
+                throw std::runtime_error("PLY header missing '" + n + "' property");
+            return size_t(std::distance(vertexProps.begin(), it));
+        };
+        size_t idxX = findIndex("x"),
+               idxY = findIndex("y"),
+               idxZ = findIndex("z");
+        size_t propCount = vertexProps.size();
+
+        // --- 3) Bulk‐read all vertex floats, then extract x,y,z and color if present ---
+        std::vector<float> raw(vertex_count * propCount);
+        in.read(reinterpret_cast<char *>(raw.data()),
+                raw.size() * sizeof(float));
+        if (!in)
+            throw std::runtime_error("Unexpected EOF in vertex data");
+
+        bool hasColor = (idxR != size_t(-1) && idxG != size_t(-1) && idxB != size_t(-1));
+
         struct Vertex
         {
             float x, y, z;
@@ -1018,54 +1035,30 @@ public:
         };
         std::vector<Vertex> verts(vertex_count);
 
-        // --- Read vertex data with correct types ---
-        for (size_t i = 0; i < vertex_count; ++i)
+        if (hasColor)
         {
-            float x = 0, y = 0, z = 0;
-            uint8_t r = 255, g = 255, b = 255;
-            for (size_t j = 0; j < vertexProps.size(); ++j)
+            for (size_t i = 0; i < vertex_count; ++i)
             {
-                if (vertexProps[j].type == "float")
-                {
-                    float v;
-                    in.read(reinterpret_cast<char *>(&v), sizeof(float));
-                    if (j == idxX)
-                        x = v;
-                    if (j == idxY)
-                        y = v;
-                    if (j == idxZ)
-                        z = v;
-                }
-                else if (vertexProps[j].type == "uchar")
-                {
-                    uint8_t v;
-                    in.read(reinterpret_cast<char *>(&v), sizeof(uint8_t));
-                    if (j == idxR)
-                        r = v;
-                    if (j == idxG)
-                        g = v;
-                    if (j == idxB)
-                        b = v;
-                }
-                else
-                {
-                    // skip other types (e.g. alpha, s, t)
-                    if (vertexProps[j].type == "uint")
-                    {
-                        uint32_t dummy;
-                        in.read(reinterpret_cast<char *>(&dummy), sizeof(uint32_t));
-                    }
-                    else
-                    {
-                        // Add more types if needed
-                        throw std::runtime_error("Unsupported property type: " + vertexProps[j].type);
-                    }
-                }
+                verts[i].x = raw[i * propCount + idxX];
+                verts[i].y = raw[i * propCount + idxY];
+                verts[i].z = raw[i * propCount + idxZ];
+                verts[i].r = static_cast<uint8_t>(raw[i * propCount + idxR]);
+                verts[i].g = static_cast<uint8_t>(raw[i * propCount + idxG]);
+                verts[i].b = static_cast<uint8_t>(raw[i * propCount + idxB]);
             }
-            verts[i] = {x, y, z, r, g, b};
+        }
+        else
+        {
+            for (size_t i = 0; i < vertex_count; ++i)
+            {
+                verts[i].x = raw[i * propCount + idxX];
+                verts[i].y = raw[i * propCount + idxY];
+                verts[i].z = raw[i * propCount + idxZ];
+                verts[i].r = verts[i].g = verts[i].b = 255;
+            }
         }
 
-        // --- Read faces (same as before) ---
+        // --- 4) Read faces (with fan‐triangulation for n‐gons) ---
         std::vector<uint32_t> indices;
         indices.reserve(face_count * 3);
         for (size_t f = 0; f < face_count; ++f)
@@ -1076,16 +1069,19 @@ public:
                 throw std::runtime_error("Unexpected EOF in face data");
 
             std::vector<uint32_t> faceIdx(nVerts);
-            in.read(reinterpret_cast<char *>(faceIdx.data()), nVerts * sizeof(uint32_t));
+            in.read(reinterpret_cast<char *>(faceIdx.data()),
+                    nVerts * sizeof(uint32_t));
             if (!in)
                 throw std::runtime_error("Unexpected EOF in face data");
 
             if (nVerts == 3)
             {
-                indices.insert(indices.end(), faceIdx.begin(), faceIdx.end());
+                indices.insert(indices.end(),
+                               faceIdx.begin(), faceIdx.end());
             }
             else
             {
+                // fan‐triangulate
                 for (uint8_t k = 1; k + 1 < nVerts; ++k)
                 {
                     indices.push_back(faceIdx[0]);
@@ -1095,7 +1091,7 @@ public:
             }
         }
 
-        // --- Upload to OpenGL (same as before) ---
+        // --- 5) Upload to OpenGL ---
         PlyMesh mesh;
         mesh.vertex_count = vertex_count;
         mesh.index_count = indices.size();
@@ -1106,15 +1102,25 @@ public:
 
         glBindVertexArray(mesh.vao);
 
+        // Vertex positions and colors
         glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
-        glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex), verts.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER,
+                     verts.size() * sizeof(Vertex),
+                     verts.data(),
+                     GL_STATIC_DRAW);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)0);
-        glEnableVertexAttribArray(4);
-        glVertexAttribPointer(4, 3, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)(3 * sizeof(float)));
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              sizeof(Vertex), (void *)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_UNSIGNED_BYTE, GL_TRUE,
+                              sizeof(Vertex), (void *)(3 * sizeof(float)));
 
+        // Elements
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint32_t), indices.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     indices.size() * sizeof(uint32_t),
+                     indices.data(),
+                     GL_STATIC_DRAW);
 
         glBindVertexArray(0);
         return mesh;
