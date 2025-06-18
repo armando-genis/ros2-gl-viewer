@@ -411,26 +411,6 @@ public:
             ImGui::EndPopup();
         }
 
-        static char meshmap_path[256] = "";
-        if (ImGui::Button("Load Map Elements"))
-        {
-            ImGui::OpenPopup("Load Map Elements mesh");
-        }
-
-        if (ImGui::BeginPopup("Load Map Elements mesh"))
-        {
-            ImGui::InputText("Mesh Map File", meshmap_path, IM_ARRAYSIZE(meshmap_path));
-            ImGui::SameLine();
-            if (ImGui::Button("OK"))
-            {
-                // construct the buffer from the file
-                loaded_mesh_map = loadPlyBinaryLE(meshmap_path);
-                mesh_map_loaded = true;
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::EndPopup();
-        }
-
         static bool show_load_input = false;
         static char filepath[256] = "";
         static int selected_ply_frame = 0;
@@ -513,7 +493,6 @@ public:
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_PROGRAM_POINT_SIZE);
-        glEnable(GL_LINE_SMOOTH);
 
         // 2) clear & GL state
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
@@ -690,27 +669,10 @@ public:
             glBindVertexArray(0);
         }
 
-        if (mesh_map_loaded)
-        {
-            shader.set_uniform("color_mode", 4);
-            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-            shader.set_uniform("model_matrix", T.matrix());
-
-            glBindVertexArray(loaded_mesh_map.vao);
-            glDrawElements(
-                GL_TRIANGLES,
-                GLsizei(loaded_mesh_map.index_count),
-                GL_UNSIGNED_INT,
-                nullptr);
-            glBindVertexArray(0);
-        }
-
-        glLineWidth(1.0f); // try 5 px
-
         if (map_lines_count_ > 0 && map_lines_vao_ != 0)
         {
-            shader.set_uniform("color_mode", 1);                                                 // flat color
-            shader.set_uniform("material_color", Eigen::Vector4f(0.459f, 0.576f, 0.686f, 0.8f)); // yellow
+            shader.set_uniform("color_mode", 1);                                           // flat color
+            shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 1.0f, 0.0f, 1.0f)); // yellow
             Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
             shader.set_uniform("model_matrix", T.matrix());
             glBindVertexArray(map_lines_vao_);
@@ -718,71 +680,30 @@ public:
             glBindVertexArray(0);
         }
 
-        glLineWidth(1.0f);
-
-        if (crosswalk_tris_count_ > 0 && crosswalk_vao_ != 0)
+        if (crosswalk_lines_count_ > 0 && crosswalk_vao_ != 0)
         {
             // flat color mode
             shader.set_uniform("color_mode", 1);
             // RGBA: here white, but you could pick e.g. (1,1,0,1) for yellow zebra stripes
-            shader.set_uniform("material_color", Eigen::Vector4f(0.545f, 0.627f, 0.643f, 1.0f));
+            shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f));
             Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
             shader.set_uniform("model_matrix", T.matrix());
 
             glBindVertexArray(crosswalk_vao_);
-            glDrawArrays(GL_TRIANGLES, 0, GLsizei(crosswalk_tris_count_));
+            // draw as lines
+            glDrawArrays(GL_LINES, 0, GLsizei(crosswalk_lines_count_));
             glBindVertexArray(0);
         }
 
-        if (stripe_tris_count_ > 0)
+        if (stripe_lines_count_ > 0 && stripe_vao_ != 0)
         {
-            shader.set_uniform("color_mode", 1); // flat color
-            shader.set_uniform("material_color", Eigen::Vector4f(0.918f, 0.918f, 0.918f, 1.0f));
+            shader.set_uniform("color_mode", 1);
+            shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f)); // white
             Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
             shader.set_uniform("model_matrix", T.matrix());
             glBindVertexArray(stripe_vao_);
-            glDrawArrays(GL_TRIANGLES, 0, GLsizei(stripe_tris_count_));
+            glDrawArrays(GL_LINES, 0, GLsizei(stripe_lines_count_));
             glBindVertexArray(0);
-        }
-
-        // 10) blinking red light with 2 s OFF, 4 s ON
-        {
-            // 1) compute elapsed time
-            auto now = std::chrono::steady_clock::now();
-            float t = std::chrono::duration<float>(now - blink_start_).count();
-
-            // 2) new blink logic
-            constexpr float offTime = 0.5f;            // first 2 s = OFF
-            constexpr float onTime = 2.5f;             // next 4 s = ON
-            constexpr float period = offTime + onTime; // total = 6 s
-            float phase = std::fmod(t, period);
-
-            bool lightOn = (phase >= offTime); // off for [0,2), on for [2,6)
-
-            if (lightOn)
-            {
-                shader.set_uniform("color_mode", 1);
-                shader.set_uniform("material_color", Eigen::Vector4f(0.92f, 0.29f, 0.286f, 1));
-
-                const std::array<const char *, 2> frames = {"light_1", "light_2"};
-                for (auto frame_name : frames)
-                {
-                    Eigen::Affine3f M = Eigen::Affine3f::Identity();
-                    {
-                        std::lock_guard<std::mutex> lk(tf_mutex_);
-                        auto it = frame_transforms_.find(frame_name);
-                        if (it != frame_transforms_.end())
-                            M = it->second;
-                    }
-
-                    // no vertical offset here; it's at the frame origin
-                    M.scale(Eigen::Vector3f(0.1f, 0.2f, 0.1f));
-                    shader.set_uniform("model_matrix", M.matrix());
-
-                    const auto &sq = glk::Primitives::instance()->primitive(glk::Primitives::CUBE);
-                    sq.draw(shader);
-                }
-            }
         }
 
         // 9) unbind & blit
@@ -1299,11 +1220,7 @@ public:
 
         int crosswalk_count = 0;
         int road_element_count = 0;
-        float z_offset = 0.08f;
         map_lines_.clear();
-        stripe_lines_.clear();
-        crosswalk_lines_.clear();
-        stripe_tris_.clear();
         // Iterate over the lanelets in the map
         for (const auto &ll : t_map->laneletLayer)
         {
@@ -1329,38 +1246,28 @@ public:
                 std::vector<Eigen::Vector3f> polygon;
                 // Left bound (forward)
                 for (const auto &point : ll.leftBound())
-                    // polygon.emplace_back(point.x(), point.y(), point.z());
-                    polygon.emplace_back(point.x(), point.y(), max_z); // Use max_z for all points
-
+                    polygon.emplace_back(point.x(), point.y(), point.z());
                 // Right bound (reverse)
                 for (int i = ll.rightBound().size() - 1; i >= 0; --i)
-                    // polygon.emplace_back(ll.rightBound()[i].x(), ll.rightBound()[i].y(), ll.rightBound()[i].z());
-                    polygon.emplace_back(ll.rightBound()[i].x(), ll.rightBound()[i].y(), max_z); // Use max_z for all points
-
+                    polygon.emplace_back(ll.rightBound()[i].x(), ll.rightBound()[i].y(), ll.rightBound()[i].z());
                 // Close the loop
                 polygon.push_back(polygon.front());
                 crosswalk_polygons_.push_back(polygon);
 
-                // print one point of the crosswalk polygon
-                std::cout << "Crosswalk polygon point: "
-                          << polygon[0].x() << ", "
-                          << polygon[0].y() << ", "
-                          << polygon[0].z() << std::endl;
-
-                crosswalk_tris_.clear();
+                crosswalk_lines_.clear();
                 for (auto &poly : crosswalk_polygons_)
                 {
-                    // fan-triangulate around poly[0]:
-                    for (size_t i = 1; i + 1 < poly.size(); ++i)
+                    // each polygon is already a closed loop (first==last)
+                    for (size_t i = 1; i < poly.size(); ++i)
                     {
-                        crosswalk_tris_.push_back(poly[0]);
-                        crosswalk_tris_.push_back(poly[i]);
-                        crosswalk_tris_.push_back(poly[i + 1]);
+                        crosswalk_lines_.emplace_back(poly[i - 1]);
+                        crosswalk_lines_.emplace_back(poly[i]);
                     }
                 }
-                crosswalk_tris_count_ = crosswalk_tris_.size();
+                crosswalk_lines_count_ = crosswalk_lines_.size();
 
                 // zebra stripes
+                stripe_lines_.clear();
                 int num_stripes = 5;
                 double left_bound_length = 0.0;
                 for (size_t i = 0; i < ll.leftBound().size() - 1; ++i)
@@ -1402,7 +1309,7 @@ public:
                             double ratio = (start_dist - accumulated_length) / segment_length;
                             start_left.x() = ll.leftBound()[i].x() + ratio * (ll.leftBound()[i + 1].x() - ll.leftBound()[i].x());
                             start_left.y() = ll.leftBound()[i].y() + ratio * (ll.leftBound()[i + 1].y() - ll.leftBound()[i].y());
-                            start_left.z() = max_z + z_offset; // Use the maximum z from the left bound
+                            start_left.z() = max_z; // Use the maximum z from the left bound
                             start_left_set = true;
                         }
                         if (accumulated_length + segment_length > end_dist && !end_left_set)
@@ -1410,7 +1317,7 @@ public:
                             double ratio = (end_dist - accumulated_length) / segment_length;
                             end_left.x() = ll.leftBound()[i].x() + ratio * (ll.leftBound()[i + 1].x() - ll.leftBound()[i].x());
                             end_left.y() = ll.leftBound()[i].y() + ratio * (ll.leftBound()[i + 1].y() - ll.leftBound()[i].y());
-                            end_left.z() = max_z + z_offset; // Use the maximum z from the left bound
+                            end_left.z() = max_z; // Use the maximum z from the left bound
                             end_left_set = true;
                             break;
                         }
@@ -1436,7 +1343,7 @@ public:
                             double ratio = (start_dist - accumulated_length) / segment_length;
                             start_right.x() = ll.rightBound()[i].x() + ratio * (ll.rightBound()[i + 1].x() - ll.rightBound()[i].x());
                             start_right.y() = ll.rightBound()[i].y() + ratio * (ll.rightBound()[i + 1].y() - ll.rightBound()[i].y());
-                            start_right.z() = max_z + z_offset; // Use the maximum z from the right bound
+                            start_right.z() = max_z; // Use the maximum z from the right bound
                             start_right_set = true;
                         }
                         if (accumulated_length + segment_length > end_dist && !end_right_set)
@@ -1444,7 +1351,7 @@ public:
                             double ratio = (end_dist - accumulated_length) / segment_length;
                             end_right.x() = ll.rightBound()[i].x() + ratio * (ll.rightBound()[i + 1].x() - ll.rightBound()[i].x());
                             end_right.y() = ll.rightBound()[i].y() + ratio * (ll.rightBound()[i + 1].y() - ll.rightBound()[i].y());
-                            end_right.z() = max_z + z_offset; // Use the maximum z from the right bound
+                            end_right.z() = max_z; // Use the maximum z from the right bound
                             end_right_set = true;
                             break;
                         }
@@ -1460,16 +1367,10 @@ public:
                     if (stripe_polygon.size() >= 4)
                     {
                         stripe_polygon.push_back(stripe_polygon.front());
-                    }
-
-                    if (stripe_polygon.size() >= 3)
-                    {
-                        // triangulate this one stripe:
-                        for (size_t j = 1; j + 1 < stripe_polygon.size(); ++j)
+                        for (size_t i = 1; i < stripe_polygon.size(); ++i)
                         {
-                            stripe_tris_.push_back(stripe_polygon[0]);
-                            stripe_tris_.push_back(stripe_polygon[j]);
-                            stripe_tris_.push_back(stripe_polygon[j + 1]);
+                            stripe_lines_.emplace_back(stripe_polygon[i - 1]);
+                            stripe_lines_.emplace_back(stripe_polygon[i]);
                         }
                     }
                 }
@@ -1516,24 +1417,14 @@ public:
         }
         glBindVertexArray(crosswalk_vao_);
         glBindBuffer(GL_ARRAY_BUFFER, crosswalk_vbo_);
-        glBufferData(
-            GL_ARRAY_BUFFER,
-            crosswalk_tris_count_ * sizeof(Eigen::Vector3f),
-            crosswalk_tris_.data(),
-            GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, crosswalk_lines_count_ * sizeof(Eigen::Vector3f), crosswalk_lines_.data(), GL_STATIC_DRAW);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(
-            0, // attribute 0 = position
-            3, GL_FLOAT, GL_FALSE,
-            sizeof(Eigen::Vector3f),
-            (void *)0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Eigen::Vector3f), (void *)0);
         glBindVertexArray(0);
 
         std::cout << blue << "----> Number of crosswalk lines: " << crosswalk_lines_count_ << reset << std::endl;
 
-        // --- after your zebra‐stripe generation loop ---
-        stripe_tris_count_ = stripe_tris_.size();
-        // upload to GPU
+        stripe_lines_count_ = stripe_lines_.size();
         if (stripe_vao_ == 0)
         {
             glGenVertexArrays(1, &stripe_vao_);
@@ -1541,20 +1432,12 @@ public:
         }
         glBindVertexArray(stripe_vao_);
         glBindBuffer(GL_ARRAY_BUFFER, stripe_vbo_);
-        glBufferData(
-            GL_ARRAY_BUFFER,
-            stripe_tris_count_ * sizeof(Eigen::Vector3f),
-            stripe_tris_.data(),
-            GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, stripe_lines_.size() * sizeof(Eigen::Vector3f), stripe_lines_.data(), GL_STATIC_DRAW);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(
-            0, 3, GL_FLOAT, GL_FALSE,
-            sizeof(Eigen::Vector3f),
-            (void *)0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Eigen::Vector3f), (void *)0);
         glBindVertexArray(0);
 
         std::cout << blue << "----> Number of stripe lines: " << stripe_lines_count_ << reset << std::endl;
-        std::cout << blue << "----> Number of stripe triangles: " << stripe_tris_count_ << reset << std::endl;
     }
 
 private:
@@ -1637,10 +1520,6 @@ private:
     PlyMesh loaded_mesh;
     bool mesh_loaded = false;
 
-    // mesh map variables
-    PlyMesh loaded_mesh_map;
-    bool mesh_map_loaded = false;
-
     // lanelet2 map varianles
     std::string map_path_;
     bool has_lanelet2_map_ = false;
@@ -1655,19 +1534,10 @@ private:
     size_t crosswalk_lines_count_ = 0;
     std::vector<Eigen::Vector3f> crosswalk_lines_;
 
-    std::vector<Eigen::Vector3f> crosswalk_tris_;
-    size_t crosswalk_tris_count_ = 0;
-
     size_t stripe_lines_count_ = 0;
     std::vector<Eigen::Vector3f> stripe_lines_;
     GLuint stripe_vao_ = 0;
     GLuint stripe_vbo_ = 0;
-
-    std::vector<Eigen::Vector3f> stripe_tris_;
-    size_t stripe_tris_count_ = 0;
-
-    // lights
-    std::chrono::steady_clock::time_point blink_start_ = std::chrono::steady_clock::now();
 };
 
 int main(int argc, char **argv)

@@ -22,6 +22,15 @@ git clone https://github.com/ocornut/imgui.git
 # Clone and generate gl3w
 git clone https://github.com/skaslev/gl3w.git
 
+git clone https://github.com/embedded-software-laboratory/Rosless-Lanelet2.git
+cd Rosless-Lanelet2
+
+mkdir build && cd build
+cmake ..
+cmake --build . -- -j$(nproc)
+sudo cmake --install .
+
+
 cd /ros2-gl-viewer/third_party/gl3w
 python3 gl3w_gen.py
 
@@ -59,4 +68,17 @@ Found frame: 'zedd' with parent: 'base_link'
 Found frame: 'velodyne' with parent: 'base_link'
 Found frame: 'base_footprint' with parent: 'base_link'
 Found frame: 'vectornav' with parent: 'base_link'
+
+
+/workspace/models/map_2.ply
+
+
+
+/workspace/models/map_tec.ply
+
+/workspace/models/sdv.ply
+
+/workspace/models/open_house.pcd
+
+/workspace/oms/open_house_v2.osm
 

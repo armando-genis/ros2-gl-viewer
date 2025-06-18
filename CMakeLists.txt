@@ -2,6 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(ros2-gl-viewer)
 
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -22,6 +23,9 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 
+
+
+
 # load 3d graphics libraries (Assimp)
 find_package(assimp REQUIRED) 
 include_directories(${ASSIMP_INCLUDE_DIRS})
@@ -35,6 +39,11 @@ set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
 include_directories(${IMGUI_DIR})
 set(IMGUI_IMPL_DIR ${IMGUI_DIR}/backends)
 include_directories(${IMGUI_IMPL_DIR})
+
+set(LANELET2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Rosless-Lanelet2")
+list(APPEND CMAKE_MODULE_PATH "${LANELET2_ROOT}/cmake")
+add_subdirectory("${LANELET2_ROOT}" "${CMAKE_BINARY_DIR}/lanelet2_build")
+
 
 # Include directories
 include_directories(
@@ -59,7 +68,6 @@ set(GLK_SOURCES
   src/glk/mesh.cpp
   src/glk/pointcloud_buffer.cpp
   src/glk/loaders/ply_loader.cpp
-  src/glk/loaders/ply_loader_ros.cpp
   src/glk/primitives/primitives.cpp
 )
 
@@ -86,6 +94,8 @@ add_executable(pointcloud_viewer
   ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
 
+
+
 # Link libraries
 target_link_libraries(pointcloud_viewer
   ${OPENGL_LIBRARIES}
@@ -99,7 +109,12 @@ target_link_libraries(pointcloud_viewer
   ${tf2_geometry_msgs_LIBRARIES}
   dl  # For gl3w dynamic loading
   ${FREETYPE_LIBRARIES}
-  ${ASSIMP_LIBRARIES}
+  lanelet2_core
+  lanelet2_io
+  lanelet2_projection
+  lanelet2_traffic_rules
+  lanelet2_routing
+  lanelet2_validation
 )
 
 # Make sure the application finds the shader files
