@@ -270,6 +270,20 @@ public:
         ImGui::Text("Scroll pad: zoom");
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
 
+        ImGui::Separator();
+        if (ImGui::Button("Reset TF Buffer"))
+        {
+            resetTFBuffer();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear Transforms"))
+        {
+            std::lock_guard<std::mutex> lock(tf_mutex_);
+            frame_transforms_.clear();
+        }
+        ImGui::SameLine();
+        ImGui::Text("TF Frames: %zu", frame_transforms_.size());
+
         if (ImGui::Button("Select Reference Frame"))
         {
             show_frames_window = !show_frames_window;
@@ -372,6 +386,8 @@ public:
         }
 
         static char pcd_path[256] = "";
+        static int selected_pcd_frame = 0;
+
         if (ImGui::Button("Load PCD"))
         {
             ImGui::OpenPopup("Load PCD File");
@@ -388,6 +404,36 @@ public:
                 has_pcd_ = true;
                 ImGui::CloseCurrentPopup();
             }
+            // TF
+            ImGui::Separator();
+            ImGui::Text("Assign to TF frame:");
+            ImGui::SameLine();
+            if (!available_frames_.empty())
+            {
+                const char *preview = available_frames_[selected_pcd_frame].c_str();
+                if (ImGui::BeginCombo("##ply_frames", preview))
+                {
+                    for (int n = 0; n < (int)available_frames_.size(); ++n)
+                    {
+
+                        bool is_selected = (selected_pcd_frame == n);
+                        if (ImGui::Selectable(available_frames_[n].c_str(), is_selected))
+                        {
+                            selected_pcd_frame = n;
+                            pcd_frame_id_ = available_frames_[n];
+                            std::cout << green << "Selected frame for pcd map: " << pcd_frame_id_ << reset << std::endl;
+                        }
+                        if (is_selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No TF frames");
+            }
+
             ImGui::EndPopup();
         }
 
@@ -662,6 +708,16 @@ public:
             // draw the PCD points
             shader.set_uniform("point_scale", 0.0f);
             shader.set_uniform("point_size", pcd_point_size_);
+            shader.set_uniform("color_mode", 0);
+
+            Eigen::Isometry3f model = Eigen::Isometry3f::Identity();
+            {
+                std::lock_guard<std::mutex> lk(tf_mutex_);
+                auto it = frame_transforms_.find(pcd_frame_id_);
+                if (it != frame_transforms_.end())
+                    model = it->second;
+            }
+            shader.set_uniform("model_matrix", model.matrix());
             glBindVertexArray(_vao);
             glDrawArrays(GL_POINTS, 0, GLsizei(pcd_num_points));
             glBindVertexArray(0);
@@ -977,6 +1033,27 @@ public:
 
         // print size of frame_transforms_
         // std::cout << green << "TF Transforms: " << frame_transforms_.size() << reset << std::endl;
+    }
+
+    void resetTFBuffer()
+    {
+        std::lock_guard<std::mutex> lock(tf_mutex_);
+
+        std::cout << yellow << "Resetting TF Buffer..." << reset << std::endl;
+
+        // Clear current transforms
+        frame_transforms_.clear();
+
+        // Reset TF listener and buffer
+        tf_listener_.reset();
+        tf_buffer_.reset();
+
+        tf_buffer_ = std::make_shared<tf2_ros::Buffer>(
+            node_->get_clock(),
+            tf2::durationFromSec(10.0));
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+        std::cout << green << "TF Buffer reset complete" << reset << std::endl;
     }
 
     void removePointCloudTopic(const std::string &topic)
@@ -1628,6 +1705,7 @@ private:
     bool has_pcd_ = false;
     bool has_pcd_setted = false;
     int pcd_num_points = 0;
+    std::string pcd_frame_id_ = "map";
 
     // PointCloudTopic and pcd size
     float topic_point_size_ = 4.0f;
