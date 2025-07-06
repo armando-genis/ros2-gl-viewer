@@ -14,6 +14,7 @@ find_package(glm REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(Freetype REQUIRED)
+find_package(GLUT   REQUIRED)
 
 # ROS2 dependencies - without using ament
 find_package(rclcpp REQUIRED)
@@ -115,7 +116,9 @@ target_link_libraries(pointcloud_viewer
   lanelet2_traffic_rules
   lanelet2_routing
   lanelet2_validation
+  ${GLUT_LIBRARY}
 )
+
 
 # Make sure the application finds the shader files
 add_custom_command(TARGET pointcloud_viewer POST_BUILD

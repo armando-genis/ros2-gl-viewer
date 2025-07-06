@@ -123,7 +123,6 @@ struct TextQuad
     Eigen::Vector3f color;
     float scale;           // Individual scale for each text
     float baseline_offset; // Offset for proper centering
-    float corner_radius = 0.0f;
     bool visible;
 };
 
@@ -642,9 +641,6 @@ public:
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // clear text redering
-        clearWorldText();
-
         // 1) Compute View matrix
         Eigen::Matrix4f view = camera_control_.view_matrix();
 
@@ -670,14 +666,14 @@ public:
         shader.set_uniform("projection_matrix", proj);
 
         // 5) draw axes
-        // {
-        //     Eigen::Matrix4f m = Eigen::Matrix4f::Identity() * 2.0f;
-        //     shader.set_uniform("color_mode", 2);
-        //     shader.set_uniform("model_matrix", m);
-        //     const auto &coord = glk::Primitives::instance()
-        //                             ->primitive(glk::Primitives::COORDINATE_SYSTEM);
-        //     coord.draw(shader);
-        // }
+        {
+            Eigen::Matrix4f m = Eigen::Matrix4f::Identity() * 2.0f;
+            shader.set_uniform("color_mode", 2);
+            shader.set_uniform("model_matrix", m);
+            const auto &coord = glk::Primitives::instance()
+                                    ->primitive(glk::Primitives::COORDINATE_SYSTEM);
+            coord.draw(shader);
+        }
 
         // 6) draw grid
         {
@@ -690,7 +686,6 @@ public:
         }
 
         // 7) draw TF frames if desired
-
         if (show_tf_frames_)
         {
             std::lock_guard lk(tf_mutex_);
@@ -698,28 +693,11 @@ public:
             const auto &coord = glk::Primitives::instance()
                                     ->primitive(glk::Primitives::COORDINATE_SYSTEM);
 
-            // First, draw the fixed frame at origin (identity transform)
-            if (!fixed_frame_.empty())
-            {
-                Eigen::Isometry3f identity = Eigen::Isometry3f::Identity();
-                shader.set_uniform("model_matrix", (identity * Eigen::Scaling(tf_frame_size_)).matrix());
-                coord.draw(shader);
-
-                // Add fixed frame name label at origin
-                Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
-                addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.5f);
-            }
-
             for (auto &p : frame_transforms_)
             {
                 shader.set_uniform("model_matrix",
                                    (p.second * Eigen::Scaling(tf_frame_size_)).matrix());
                 coord.draw(shader);
-
-                // Add frame name label immediately
-                Eigen::Vector3f frame_position = p.second.translation();
-                Eigen::Vector3f text_position = frame_position + Eigen::Vector3f(0.0f, 0.0f, -0.1f);
-                addWorldText(p.first, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.5f);
             }
         }
 
@@ -939,13 +917,16 @@ public:
             }
         }
 
-        // {
+        {
 
-        //     addWorldText("base_link", Eigen::Vector3f(0.0f, 0.0f, 0.0f), Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.05f); // Very small text
-        // }
+            setTextScale(0.3f);
+            // Add text at origin
+            clearWorldText();
+            addWorldText("base-link", Eigen::Vector3f(0.0f, 0.0f, 0.0f), Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.05f); // Very small text
 
-        // render text
-        renderWorldText(view, proj);
+            // Render all text
+            renderWorldText(view, proj);
+        }
 
         // 9) unbind & blit
         main_canvas_->unbind();
@@ -1760,7 +1741,7 @@ public:
         }
 
         // Set font size (smaller values = smaller text)
-        FT_Set_Pixel_Sizes(ft_face_, 0, 30);
+        FT_Set_Pixel_Sizes(ft_face_, 0, 30); // Changed from 48 to 24 for smaller text
 
         // Disable byte-alignment restriction
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -1823,25 +1804,13 @@ public:
         glBindVertexArray(0);
 
         // Create background quad VAO/VBO
-        // glGenVertexArrays(1, &bg_vao_);
-        // glGenBuffers(1, &bg_vbo_);
-        // glBindVertexArray(bg_vao_);
-        // glBindBuffer(GL_ARRAY_BUFFER, bg_vbo_);
-        // glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 6 * 3, NULL, GL_DYNAMIC_DRAW);
-        // glEnableVertexAttribArray(0);
-        // glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), 0);
-        // glBindBuffer(GL_ARRAY_BUFFER, 0);
-        // glBindVertexArray(0);
-
         glGenVertexArrays(1, &bg_vao_);
         glGenBuffers(1, &bg_vbo_);
         glBindVertexArray(bg_vao_);
         glBindBuffer(GL_ARRAY_BUFFER, bg_vbo_);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 6 * 5, NULL, GL_DYNAMIC_DRAW); // 5 components per vertex
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 6 * 3, NULL, GL_DYNAMIC_DRAW);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)(3 * sizeof(float)));
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), 0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
 
@@ -1890,66 +1859,28 @@ public:
         )";
 
         // Background vertex shader
-        // const char *bg_vertex_shader = R"(
-        //     #version 460 core
-        //     layout (location = 0) in vec3 aPos;
-
-        //     uniform mat4 projection;
-        //     uniform mat4 view;
-        //     uniform mat4 model;
-
-        //     void main() {
-        //         gl_Position = projection * view * model * vec4(aPos, 1.0);
-        //     }
-        // )";
-
         const char *bg_vertex_shader = R"(
             #version 460 core
             layout (location = 0) in vec3 aPos;
-            layout (location = 1) in vec2 aUV;  // Add UV coordinates
             
             uniform mat4 projection;
             uniform mat4 view;
             uniform mat4 model;
             
-            out vec2 uv;
-            
             void main() {
                 gl_Position = projection * view * model * vec4(aPos, 1.0);
-                uv = aUV;
             }
         )";
 
         // Background fragment shader
-        // const char *bg_fragment_shader = R"(
-        //     #version 460 core
-        //     out vec4 FragColor;
-
-        //     uniform vec3 bgColor;
-
-        //     void main() {
-        //         FragColor = vec4(bgColor, 0.8); // Semi-transparent background
-        //     }
-        // )";
-
         const char *bg_fragment_shader = R"(
             #version 460 core
-            in vec2 uv;
             out vec4 FragColor;
             
             uniform vec3 bgColor;
-            uniform float cornerRadius;
             
             void main() {
-                vec2 pos = uv * 2.0 - 1.0;  // Convert UV to [-1, 1] range
-                
-                // Calculate distance to rounded rectangle corners
-                vec2 d = abs(pos) - (1.0 - cornerRadius);
-                float distance = min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - cornerRadius;
-                
-                float alpha = 1.0 - smoothstep(0.0, 0.02, distance);
-                
-                FragColor = vec4(bgColor, 0.8 * alpha);
+                FragColor = vec4(bgColor, 0.8); // Semi-transparent background
             }
         )";
 
@@ -2019,42 +1950,27 @@ public:
     // Add text to be rendered at world position
     void addWorldText(const std::string &text, const Eigen::Vector3f &world_pos,
                       const Eigen::Vector3f &color = Eigen::Vector3f(1.0f, 1.0f, 1.0f),
-                      float scale = 1.0f,
-                      float corner_radius = 0.0f)
+                      float scale = 1.0f)
     {
         TextQuad quad;
         quad.text = text;
         quad.position = world_pos;
         quad.color = color;
         quad.scale = scale;
-        quad.corner_radius = corner_radius;
         quad.visible = true;
 
-        // Calculate text size and baseline info for background using individual scale
+        // Calculate text size for background using individual scale
         float text_width = 0.0f;
-        float max_bearing_y = 0.0f;
-        float min_bearing_y = 0.0f;
+        float text_height = 0.0f;
         float effective_scale = text_scale_ * scale;
-
         for (char c : text)
         {
             Character ch = characters_[c];
             text_width += (ch.advance >> 6) * effective_scale;
-
-            // Track the highest and lowest points of the text
-            float top = ch.bearing.y() * effective_scale;
-            float bottom = (ch.bearing.y() - ch.size.y()) * effective_scale;
-
-            max_bearing_y = std::max(max_bearing_y, top);
-            min_bearing_y = std::min(min_bearing_y, bottom);
+            text_height = std::max(text_height, static_cast<float>(ch.size.y()) * effective_scale);
         }
 
-        float text_height = max_bearing_y - min_bearing_y;
-
-        // Store both size and baseline offset for proper centering
         quad.size = Eigen::Vector2f(text_width, text_height);
-        quad.baseline_offset = (max_bearing_y + min_bearing_y) / 2.0f; // Center offset
-
         text_quads_.push_back(quad);
     }
 
@@ -2072,6 +1988,7 @@ public:
             // Calculate billboard transformation (always face camera)
             Eigen::Matrix4f model = Eigen::Matrix4f::Identity();
 
+            // Method 1: Proper billboard using camera position and forward vector
             // Extract camera position from inverse view matrix
             Eigen::Matrix4f inv_view = view.inverse();
             Eigen::Vector3f camera_pos = inv_view.block<3, 1>(0, 3);
@@ -2079,8 +1996,8 @@ public:
             // Calculate direction from text to camera
             Eigen::Vector3f to_camera = (camera_pos - quad.position).normalized();
 
-            // Use world up vector (adjust if the world uses different up axis)
-            Eigen::Vector3f world_up(0.0f, 0.0f, 1.0f);
+            // Use world up vector (adjust if your world uses different up axis)
+            Eigen::Vector3f world_up(0.0f, 0.0f, 1.0f); // or (0.0f, 1.0f, 0.0f) if Y is up
 
             // Calculate right vector
             Eigen::Vector3f right = world_up.cross(to_camera).normalized();
@@ -2096,7 +2013,7 @@ public:
 
             // Render background first (offset backwards)
             Eigen::Matrix4f bg_model = model;
-            float background_offset = 0.02f; // Move background slightly away from the text
+            float background_offset = 0.02f; // Move background slightly away from camera
             bg_model.block<3, 1>(0, 3) = quad.position - to_camera * background_offset;
             renderTextBackground(quad, bg_model, view, projection);
 
@@ -2119,29 +2036,18 @@ public:
         glUniformMatrix4fv(glGetUniformLocation(bg_shader_program_, "model"), 1, GL_FALSE, model.data());
         glUniform3f(glGetUniformLocation(bg_shader_program_, "bgColor"), 0.0f, 0.0f, 0.0f);
 
-        glUniform1f(glGetUniformLocation(bg_shader_program_, "cornerRadius"), quad.corner_radius);
-
         // Create background quad slightly larger than text (use individual scale)
-        float padding = quad.scale;
+        float padding = 0.05f * quad.scale;
         float width = quad.size.x() + padding * 2.0f;
         float height = quad.size.y() + padding * 2.0f;
 
-        // float vertices[] = {
-        //     -width / 2.0f, -height / 2.0f, 0.0f,
-        //     width / 2.0f, -height / 2.0f, 0.0f,
-        //     width / 2.0f, height / 2.0f, 0.0f,
-        //     -width / 2.0f, -height / 2.0f, 0.0f,
-        //     width / 2.0f, height / 2.0f, 0.0f,
-        //     -width / 2.0f, height / 2.0f, 0.0f};
-
         float vertices[] = {
-            // Position         // UV
-            -width / 2.0f, -height / 2.0f, 0.0f, 0.0f, 0.0f,
-            width / 2.0f, -height / 2.0f, 0.0f, 1.0f, 0.0f,
-            width / 2.0f, height / 2.0f, 0.0f, 1.0f, 1.0f,
-            -width / 2.0f, -height / 2.0f, 0.0f, 0.0f, 0.0f,
-            width / 2.0f, height / 2.0f, 0.0f, 1.0f, 1.0f,
-            -width / 2.0f, height / 2.0f, 0.0f, 0.0f, 1.0f};
+            -width / 2.0f, -height / 2.0f, 0.0f,
+            width / 2.0f, -height / 2.0f, 0.0f,
+            width / 2.0f, height / 2.0f, 0.0f,
+            -width / 2.0f, -height / 2.0f, 0.0f,
+            width / 2.0f, height / 2.0f, 0.0f,
+            -width / 2.0f, height / 2.0f, 0.0f};
 
         glBindVertexArray(bg_vao_);
         glBindBuffer(GL_ARRAY_BUFFER, bg_vbo_);
@@ -2178,7 +2084,7 @@ public:
         }
 
         float x = -text_width / 2.0f;
-        float y = -quad.baseline_offset;
+        float y = 0.0f;
 
         // Iterate through all characters
         for (char c : quad.text)
