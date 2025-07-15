@@ -1,3 +1,6 @@
+// OpenGL Version: 4.6 (Compatibility Profile) Mesa 23.2.1-1ubuntu3.1~22.04.3
+// GLSL Version: 4.60
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -194,6 +197,10 @@ public:
         colors[ImGuiCol_FrameBgHovered] = ImVec4(0.098f, 0.125f, 0.078f, 0.90f);
         colors[ImGuiCol_FrameBgActive] = ImVec4(0.098f, 0.125f, 0.078f, 0.90f);
 
+        colors[ImGuiCol_Separator] = ImVec4(0.451f, 0.584f, 0.349f, 0.8f);
+        colors[ImGuiCol_SeparatorHovered] = ImVec4(0.471f, 0.576f, 0.541f, 1.00f);
+        colors[ImGuiCol_SeparatorActive] = ImVec4(0.4f, 0.42f, 0.369f, 1.00f);
+
         // Style adjustments
         style.WindowRounding = 5.0f;    // Main window corners
         style.ChildRounding = 5.0f;     // Child window corners
@@ -204,7 +211,7 @@ public:
         style.TabRounding = 3.0f;       // Tab corners
 
         // ===== SIZES & SPACING =====
-        style.WindowPadding = ImVec2(12.0f, 12.0f);  // Padding inside windows
+        style.WindowPadding = ImVec2(13.0f, 13.0f);  // Padding inside windows
         style.FramePadding = ImVec2(8.0f, 4.0f);     // Padding inside frames (buttons, inputs)
         style.ItemSpacing = ImVec2(8.0f, 6.0f);      // Spacing between items
         style.ItemInnerSpacing = ImVec2(6.0f, 4.0f); // Spacing inside items
@@ -351,6 +358,20 @@ public:
 
         // Main options window
         ImGui::Begin("ros2 Viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+        // Position window at bottom of screen
+        // ImVec2 viewport_size = ImGui::GetMainViewport()->Size;
+        // float panel_height = 300.0f; // Adjust height as needed
+
+        // ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+        // ImGui::SetNextWindowSize(ImVec2(450.0f, viewport_size.y), ImGuiCond_Always);
+
+        // // Main options window - Fixed bottom panel
+        // ImGui::Begin("ros2 Viewer", nullptr,
+        //              ImGuiWindowFlags_NoMove |
+        //                  ImGuiWindowFlags_NoResize |
+        //                  ImGuiWindowFlags_NoCollapse |
+        //                  ImGuiWindowFlags_NoTitleBar // Optional: removes title bar
+        // );
 
         // FPS counter
         ImGui::Separator();
@@ -366,6 +387,8 @@ public:
 
         ImGui::SameLine();
         ImGui::Text("TF Frames: %zu", frame_transforms_.size());
+
+        ImGui::Separator();
 
         if (ImGui::Button("Select Reference Frame"))
         {
@@ -397,6 +420,8 @@ public:
             ImGui::EndChild();
         }
 
+        ImGui::Separator();
+
         // Button to toggle Topics window
         if (ImGui::Button("Show ROS2 Topics"))
         {
@@ -410,6 +435,8 @@ public:
         // Show topics window if enabled
         if (show_topics_window)
         {
+            // Topic hz
+            updateTopicFrequencies(now);
             // Check if we need to refresh
             if (now - last_topic_refresh_ > topic_refresh_interval_)
             {
@@ -419,28 +446,112 @@ public:
             ImGui::Text("Available ROS2 Topics:");
             ImGui::Separator();
 
-            ImGui::BeginChild("TopicsList", ImVec2(400, 200), true);
+            ImGui::BeginChild("TopicsList", ImVec2(420, 300), true);
             {
                 std::lock_guard<std::mutex> lock(topics_mutex_);
                 for (int i = 0; i < (int)topic_names_.size(); ++i)
                 {
                     const auto &name = topic_names_[i];
-                    // circle-alive indicator (unchanged)
+
+                    // Get Hz value first
+                    float hz = 0.0f;
+                    auto hz_it = topic_hz_.find(name);
+                    if (hz_it != topic_hz_.end())
+                    {
+                        hz = hz_it->second;
+                    }
+
+                    // Format Hz text with exactly one decimal place
+                    char hz_text[32];
+                    snprintf(hz_text, sizeof(hz_text), "%.1f Hz", hz);
+
+                    // Calculate elements dimensions
+                    const float circle_radius = 5.0f;
+                    const float padding = 3.0f;
+                    const float rounding = 3.0f; // Rounded corners
+
+                    // FIXED WIDTH for Hz square to prevent movement
+                    const float hz_square_fixed_width = 60.0f; // Fixed width for all Hz squares
+                    ImVec2 hz_text_size = ImGui::CalcTextSize(hz_text);
+                    float line_height = ImGui::GetTextLineHeight();
+
+                    // Use consistent height for all elements
+                    float element_height = std::max(line_height, circle_radius * 2);
+
+                    // Store initial cursor position for the row
+                    ImVec2 row_start = ImGui::GetCursorScreenPos();
+
+                    // === DRAW ALIVE INDICATOR CIRCLE ===
                     bool alive = false;
                     auto it = last_msg_time_.find(name);
                     if (it != last_msg_time_.end())
                         alive = (now - it->second) < alive_threshold_;
-                    const float r = 5.0f;
-                    ImU32 col = alive ? IM_COL32(0, 255, 0, 255) : IM_COL32(255, 0, 0, 255);
-                    ImGui::Dummy(ImVec2(r * 2, r * 2));
-                    ImVec2 p = ImGui::GetItemRectMin();
-                    ImGui::GetWindowDrawList()->AddCircleFilled({p.x + r, p.y + r}, r, col);
 
-                    ImGui::SameLine();
-                    // make it selectable
+                    ImU32 circle_col = alive ? IM_COL32(114, 175, 67, 255) : IM_COL32(255, 39, 41, 255);
+                    float circle_y_center = row_start.y + element_height * 0.5f;
+                    ImGui::GetWindowDrawList()->AddCircleFilled(
+                        {row_start.x + circle_radius, circle_y_center},
+                        circle_radius,
+                        circle_col);
+
+                    // === DRAW HZ SQUARE ===
+                    float hz_square_x = row_start.x + circle_radius * 2 + 8.0f; // Space after circle
+                    float hz_square_height = hz_text_size.y + padding * 2;
+                    float hz_square_y = row_start.y + (element_height - hz_square_height) * 0.5f; // Center vertically
+
+                    ImVec2 hz_square_min = {hz_square_x, hz_square_y};
+                    ImVec2 hz_square_max = {hz_square_x + hz_square_fixed_width, hz_square_y + hz_square_height};
+
+                    // Draw rounded white square background
+                    ImGui::GetWindowDrawList()->AddRectFilled(
+                        hz_square_min,
+                        hz_square_max,
+                        IM_COL32(25, 29, 32, 200), // White color
+                        rounding                   // Rounded corners
+                    );
+
+                    // Optional: Add a subtle border around the square
+                    ImGui::GetWindowDrawList()->AddRect(
+                        hz_square_min,
+                        hz_square_max,
+                        IM_COL32(93, 103, 113, 200), // Light gray border
+                        rounding,                    // Rounded corners
+                        0,                           // No flags
+                        1.0f                         // Border thickness
+                    );
+
+                    // Draw Hz text CENTERED in the fixed-width square
+                    ImVec2 hz_text_pos = {
+                        hz_square_x + (hz_square_fixed_width - hz_text_size.x) * 0.5f, // Center horizontally
+                        hz_square_y + padding};
+
+                    ImGui::GetWindowDrawList()->AddText(
+                        hz_text_pos,
+                        IM_COL32(253, 234, 234, 255), // Black text
+                        hz_text);
+
+                    // === DRAW TOPIC NAME ===
+                    float topic_name_x = hz_square_max.x + 8.0f;                              // Space after Hz square
+                    float topic_name_y = row_start.y + (element_height - line_height) * 0.5f; // Center vertically
+
+                    // Set cursor position for the selectable topic name
+                    ImGui::SetCursorScreenPos({topic_name_x, row_start.y});
+
+                    // Create invisible button area for the full remaining width to make selection easier
+                    float available_width = ImGui::GetContentRegionAvail().x;
                     bool is_selected = (i == selected_topic_idx_);
-                    if (ImGui::Selectable(name.c_str(), is_selected))
+
+                    // Draw selectable with proper vertical centering
+                    ImGui::PushID(i);
+                    if (ImGui::Selectable("##topic_select", is_selected, 0, ImVec2(available_width, element_height)))
                         selected_topic_idx_ = i;
+                    ImGui::PopID();
+
+                    // Draw topic name text over the selectable area
+                    ImGui::GetWindowDrawList()->AddText(
+                        {topic_name_x + 4.0f, topic_name_y}, // Small left padding
+                        is_selected ? IM_COL32(255, 255, 255, 255) : ImGui::GetColorU32(ImGuiCol_Text),
+                        name.c_str());
                 }
             }
             ImGui::EndChild();
@@ -461,6 +572,8 @@ public:
                 }
             }
         }
+
+        ImGui::Separator();
 
         static bool show_load_input_pcd = false;
         static char pcd_path[256] = "";
@@ -513,6 +626,8 @@ public:
             }
         }
 
+        ImGui::Separator();
+
         static bool show_load_input_lanelet_map = false;
         static char laneletmap_path[256] = "";
         if (ImGui::Button("Load Lanelet Map"))
@@ -534,6 +649,8 @@ public:
             }
         }
 
+        ImGui::Separator();
+
         static bool show_load_input_map_element = false;
         static char meshmap_path[256] = "";
         if (ImGui::Button("Load Map Elements"))
@@ -553,6 +670,8 @@ public:
                 show_load_input_map_element = false;
             }
         }
+
+        ImGui::Separator();
 
         static bool show_load_input = false;
         static char filepath[256] = "";
@@ -623,12 +742,17 @@ public:
             }
         }
 
+        ImGui::Separator();
+
         ImGui::SliderFloat("ROS Topic Point Size", &topic_point_size_, 1.0f, 20.0f);
         ImGui::SliderFloat("PCD Point Size", &pcd_point_size_, 1.0f, 20.0f);
 
         ImGui::End();
     }
 
+    // https://stackoverflow.com/questions/34866964/opengl-gllinewidth-doesnt-change-size-of-lines
+    // https://registry.khronos.org/OpenGL-Refpages/gl4/html/glLineWidth.xhtml
+    // https://docs.gl/gl4/glEnable
     void draw_gl() override
     {
         // 1) bind offscreen framebuffer
@@ -694,32 +818,33 @@ public:
         if (show_tf_frames_)
         {
             std::lock_guard lk(tf_mutex_);
-            shader.set_uniform("color_mode", 2);
-            const auto &coord = glk::Primitives::instance()
-                                    ->primitive(glk::Primitives::COORDINATE_SYSTEM);
+            shader.set_uniform("color_mode", 1); // Use flat color mode
+
+            // Use cube primitive to create thick axes
+            const auto &cube = glk::Primitives::instance()->primitive(glk::Primitives::CUBE);
+
+            float axis_length = tf_frame_size_;
+            float axis_thickness = 0.05f;
 
             // First, draw the fixed frame at origin (identity transform)
             if (!fixed_frame_.empty())
             {
                 Eigen::Isometry3f identity = Eigen::Isometry3f::Identity();
-                shader.set_uniform("model_matrix", (identity * Eigen::Scaling(tf_frame_size_)).matrix());
-                coord.draw(shader);
+                drawThickCoordinateFrame(shader, cube, identity, axis_length, axis_thickness);
 
                 // Add fixed frame name label at origin
                 Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
-                addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.5f);
+                addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
             }
 
             for (auto &p : frame_transforms_)
             {
-                shader.set_uniform("model_matrix",
-                                   (p.second * Eigen::Scaling(tf_frame_size_)).matrix());
-                coord.draw(shader);
+                drawThickCoordinateFrame(shader, cube, p.second, axis_length, axis_thickness);
 
-                // Add frame name label immediately
+                // Add frame name label
                 Eigen::Vector3f frame_position = p.second.translation();
                 Eigen::Vector3f text_position = frame_position + Eigen::Vector3f(0.0f, 0.0f, -0.1f);
-                addWorldText(p.first, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.5f);
+                addWorldText(p.first, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
             }
         }
 
@@ -819,6 +944,38 @@ public:
             glBindVertexArray(_vao);
             glDrawArrays(GL_POINTS, 0, GLsizei(pcd_num_points));
             glBindVertexArray(0);
+        }
+
+        if (show_tf_frames_)
+        {
+            std::lock_guard lk(tf_mutex_);
+            shader.set_uniform("color_mode", 2);
+            const auto &coord = glk::Primitives::instance()
+                                    ->primitive(glk::Primitives::COORDINATE_SYSTEM);
+
+            // First, draw the fixed frame at origin (identity transform)
+            if (!fixed_frame_.empty())
+            {
+                Eigen::Isometry3f identity = Eigen::Isometry3f::Identity();
+                shader.set_uniform("model_matrix", (identity * Eigen::Scaling(tf_frame_size_)).matrix());
+                coord.draw(shader);
+
+                // Add fixed frame name label at origin
+                Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
+                addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
+            }
+
+            for (auto &p : frame_transforms_)
+            {
+                shader.set_uniform("model_matrix",
+                                   (p.second * Eigen::Scaling(tf_frame_size_)).matrix());
+                coord.draw(shader);
+
+                // Add frame name label immediately
+                Eigen::Vector3f frame_position = p.second.translation();
+                Eigen::Vector3f text_position = frame_position + Eigen::Vector3f(0.0f, 0.0f, -0.1f);
+                addWorldText(p.first, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
+            }
         }
 
         if (mesh_loaded)
@@ -952,6 +1109,43 @@ public:
         main_canvas_->render_to_screen();
     }
 
+    void drawThickCoordinateFrame(glk::GLSLShader &shader, const glk::Drawable &cube,
+                                  const Eigen::Isometry3f &transform, float length, float thickness)
+    {
+        // X-axis (Red) - Use Affine3f instead of Isometry3f for scaling
+        {
+            Eigen::Affine3f x_transform(transform.matrix());
+            x_transform.translate(Eigen::Vector3f(length / 2, 0, 0)); // Move to center of axis
+            x_transform.scale(Eigen::Vector3f(length, thickness, thickness));
+
+            shader.set_uniform("model_matrix", x_transform.matrix());
+            shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 0.0f, 0.0f, 1.0f)); // Red
+            cube.draw(shader);
+        }
+
+        // Y-axis (Green)
+        {
+            Eigen::Affine3f y_transform(transform.matrix());
+            y_transform.translate(Eigen::Vector3f(0, length / 2, 0)); // Move to center of axis
+            y_transform.scale(Eigen::Vector3f(thickness, length, thickness));
+
+            shader.set_uniform("model_matrix", y_transform.matrix());
+            shader.set_uniform("material_color", Eigen::Vector4f(0.0f, 1.0f, 0.0f, 1.0f)); // Green
+            cube.draw(shader);
+        }
+
+        // Z-axis (Blue)
+        {
+            Eigen::Affine3f z_transform(transform.matrix());
+            z_transform.translate(Eigen::Vector3f(0, 0, length / 2)); // Move to center of axis
+            z_transform.scale(Eigen::Vector3f(thickness, thickness, length));
+
+            shader.set_uniform("model_matrix", z_transform.matrix());
+            shader.set_uniform("material_color", Eigen::Vector4f(0.0f, 0.0f, 1.0f, 1.0f)); // Blue
+            cube.draw(shader);
+        }
+    }
+
     void framebuffer_size_callback(const Eigen::Vector2i &size) override
     {
         main_canvas_->set_size(size);
@@ -985,7 +1179,13 @@ public:
             {
                 if (!current.count(it->first))
                 {
+                    // Topic live no longer exists
                     last_msg_time_.erase(it->first);
+
+                    // hz topic clean
+                    topic_message_times_.erase(it->first); // Clean up frequency data
+                    topic_hz_.erase(it->first);
+
                     it = subs_.erase(it);
                 }
                 else
@@ -1011,7 +1211,33 @@ public:
                         [this, name](std::shared_ptr<rclcpp::SerializedMessage>)
                         {
                             std::lock_guard<std::mutex> lk(topics_mutex_);
-                            last_msg_time_[name] = std::chrono::steady_clock::now();
+                            auto now = std::chrono::steady_clock::now();
+                            last_msg_time_[name] = now;
+
+                            // ROS2-like frequency tracking
+                            auto &times = topic_message_times_[name];
+                            times.push_back(now);
+
+                            // Keep window size like ROS2 (but smaller for real-time)
+                            while (times.size() > ROS2_LIKE_WINDOW_SIZE)
+                            {
+                                times.pop_front();
+                            }
+
+                            // Calculate Hz using ROS2's method
+                            if (times.size() >= 2)
+                            {
+                                auto total_duration = times.back() - times.front();
+                                auto total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(total_duration).count();
+
+                                if (total_ns > 0)
+                                {
+                                    // ROS2's algorithm: intervals / total_time
+                                    float intervals = static_cast<float>(times.size() - 1);
+                                    float total_seconds = total_ns / 1e9f;
+                                    topic_hz_[name] = intervals / total_seconds;
+                                }
+                            }
                         });
                     subs_[name] = s;
                     last_msg_time_[name] = std::chrono::steady_clock::time_point{};
@@ -1020,6 +1246,38 @@ public:
                 {
                     // std::cerr << "Failed to create subscription for topic " << name << ": " << e.what() << std::endl;
                 }
+            }
+        }
+    }
+
+    // Simple function to update Hz values (call this in draw_ui)
+    void updateTopicFrequencies(std::chrono::steady_clock::time_point now)
+    {
+        std::lock_guard<std::mutex> lock(topics_mutex_);
+
+        for (auto &[topic_name, times] : topic_message_times_)
+        {
+            // Remove old messages (older than 2 seconds)
+            auto cutoff = now - std::chrono::seconds(2);
+            while (!times.empty() && times.front() < cutoff)
+            {
+                times.pop_front();
+            }
+
+            // Recalculate Hz
+            if (times.size() >= 2)
+            {
+                auto duration = times.back() - times.front();
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+                if (ms > 0)
+                {
+                    float intervals = static_cast<float>(times.size() - 1);
+                    topic_hz_[topic_name] = (intervals * 1000.0f) / ms;
+                }
+            }
+            else
+            {
+                topic_hz_[topic_name] = 0.0f;
             }
         }
     }
@@ -2303,6 +2561,11 @@ private:
     std::unordered_map<std::string, rclcpp::SubscriptionBase::SharedPtr> subs_;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_msg_time_;
     std::chrono::milliseconds alive_threshold_{1000}; // e.g. 1.0s
+
+    // topic hz
+    std::unordered_map<std::string, std::deque<std::chrono::steady_clock::time_point> > topic_message_times_;
+    std::unordered_map<std::string, float> topic_hz_;
+    static constexpr size_t ROS2_LIKE_WINDOW_SIZE = 100;
 
     bool show_topics_window = false;
 
