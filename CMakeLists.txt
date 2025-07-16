@@ -70,6 +70,7 @@ set(GLK_SOURCES
   src/glk/pointcloud_buffer.cpp
   src/glk/loaders/ply_loader.cpp
   src/glk/primitives/primitives.cpp
+  src/glk/TextRendering.cpp
 )
 
 # List all source files in guik directory
