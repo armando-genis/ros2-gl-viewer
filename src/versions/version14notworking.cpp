@@ -822,6 +822,41 @@ public:
             grid_->draw(shader);
         }
 
+        // 7) draw TF frames if desired
+
+        // if (show_tf_frames_)
+        // {
+        //     std::lock_guard lk(tf_mutex_);
+        //     shader.set_uniform("color_mode", 1); // Use flat color mode
+
+        //     // Use cube primitive to create thick axes
+        //     const auto &cube = glk::Primitives::instance()->primitive(glk::Primitives::CUBE);
+
+        //     float axis_length = tf_frame_size_;
+        //     float axis_thickness = 0.05f;
+
+        //     // First, draw the fixed frame at origin (identity transform)
+        //     if (!fixed_frame_.empty())
+        //     {
+        //         Eigen::Isometry3f identity = Eigen::Isometry3f::Identity();
+        //         drawThickCoordinateFrame(shader, cube, identity, axis_length, axis_thickness);
+
+        //         // Add fixed frame name label at origin
+        //         Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
+        //         addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
+        //     }
+
+        //     for (auto &p : frame_transforms_)
+        //     {
+        //         drawThickCoordinateFrame(shader, cube, p.second, axis_length, axis_thickness);
+
+        //         // Add frame name label
+        //         Eigen::Vector3f frame_position = p.second.translation();
+        //         Eigen::Vector3f text_position = frame_position + Eigen::Vector3f(0.0f, 0.0f, -0.1f);
+        //         addWorldText(p.first, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
+        //     }
+        // }
+
         // Replace your entire TF frame rendering block with this:
         if (show_tf_frames_)
         {
@@ -835,7 +870,7 @@ public:
                 tf_frame_size_,
                 tf_axis_thickness_);
 
-            // add text labels
+            // Still add text labels
             {
                 std::lock_guard lk(tf_mutex_);
                 if (!fixed_frame_.empty())
@@ -903,6 +938,11 @@ public:
                     continue;
 
                 size_t n = ct->cloud->size();
+                // std::cout << "[PC_CB IN RENDER] "
+                //           << ct->topic_name
+                //           << " → "
+                //           << n
+                //           << " pts\n";
 
                 // draw the per-cloud VAO
                 shader.set_uniform("model_matrix", ct->transform.matrix());
@@ -944,6 +984,38 @@ public:
             glBindVertexArray(_vao);
             glDrawArrays(GL_POINTS, 0, GLsizei(pcd_num_points));
             glBindVertexArray(0);
+        }
+
+        if (show_tf_frames_)
+        {
+            std::lock_guard lk(tf_mutex_);
+            shader.set_uniform("color_mode", 2);
+            const auto &coord = glk::Primitives::instance()
+                                    ->primitive(glk::Primitives::COORDINATE_SYSTEM);
+
+            // First, draw the fixed frame at origin (identity transform)
+            if (!fixed_frame_.empty())
+            {
+                Eigen::Isometry3f identity = Eigen::Isometry3f::Identity();
+                shader.set_uniform("model_matrix", (identity * Eigen::Scaling(tf_frame_size_)).matrix());
+                coord.draw(shader);
+
+                // Add fixed frame name label at origin
+                Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
+                addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
+            }
+
+            for (auto &p : frame_transforms_)
+            {
+                shader.set_uniform("model_matrix",
+                                   (p.second * Eigen::Scaling(tf_frame_size_)).matrix());
+                coord.draw(shader);
+
+                // Add frame name label immediately
+                Eigen::Vector3f frame_position = p.second.translation();
+                Eigen::Vector3f text_position = frame_position + Eigen::Vector3f(0.0f, 0.0f, -0.1f);
+                addWorldText(p.first, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
+            }
         }
 
         if (mesh_loaded)
@@ -1075,6 +1147,43 @@ public:
         // 9) unbind & blit
         main_canvas_->unbind();
         main_canvas_->render_to_screen();
+    }
+
+    void drawThickCoordinateFrame(glk::GLSLShader &shader, const glk::Drawable &cube,
+                                  const Eigen::Isometry3f &transform, float length, float thickness)
+    {
+        // X-axis (Red) - Use Affine3f instead of Isometry3f for scaling
+        {
+            Eigen::Affine3f x_transform(transform.matrix());
+            x_transform.translate(Eigen::Vector3f(length / 2, 0, 0)); // Move to center of axis
+            x_transform.scale(Eigen::Vector3f(length, thickness, thickness));
+
+            shader.set_uniform("model_matrix", x_transform.matrix());
+            shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 0.0f, 0.0f, 1.0f)); // Red
+            cube.draw(shader);
+        }
+
+        // Y-axis (Green)
+        {
+            Eigen::Affine3f y_transform(transform.matrix());
+            y_transform.translate(Eigen::Vector3f(0, length / 2, 0)); // Move to center of axis
+            y_transform.scale(Eigen::Vector3f(thickness, length, thickness));
+
+            shader.set_uniform("model_matrix", y_transform.matrix());
+            shader.set_uniform("material_color", Eigen::Vector4f(0.0f, 1.0f, 0.0f, 1.0f)); // Green
+            cube.draw(shader);
+        }
+
+        // Z-axis (Blue)
+        {
+            Eigen::Affine3f z_transform(transform.matrix());
+            z_transform.translate(Eigen::Vector3f(0, 0, length / 2)); // Move to center of axis
+            z_transform.scale(Eigen::Vector3f(thickness, thickness, length));
+
+            shader.set_uniform("model_matrix", z_transform.matrix());
+            shader.set_uniform("material_color", Eigen::Vector4f(0.0f, 0.0f, 1.0f, 1.0f)); // Blue
+            cube.draw(shader);
+        }
     }
 
     void framebuffer_size_callback(const Eigen::Vector2i &size) override
