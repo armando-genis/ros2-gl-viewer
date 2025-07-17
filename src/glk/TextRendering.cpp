@@ -3,7 +3,7 @@
 
 // Constructor/Destructor
 TextRenderer::TextRenderer() = default;
-TextRenderer::~TextRenderer() { cleanupTextRendering(); }
+TextRenderer::~TextRenderer() {}
 
 bool TextRenderer::initTextRendering(const std::string &font_path)
 {

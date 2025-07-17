@@ -82,7 +82,7 @@ public:
             glDrawArrays(GL_POINTS, 0, 3); // 3 points = 3 arrows (X, Y, Z axes)
         }
 
-        // Restore previous OpenGL state
+        // Restore previous OpenGL state (need to save and restore the OpenGL state around the thick lines rendering)
         glBindVertexArray(previous_vao);
         glUseProgram(previous_program);
     }
