@@ -35,6 +35,7 @@ private:
     std::string reset = "\033[0m";
 
     // lanelet2 map varianles
+    bool has_lanelet2_map_setted_ = false;
     std::string map_path_;
     bool has_lanelet2_map_ = false;
     GLuint map_lines_vao_ = 0, map_lines_vbo_ = 0;
@@ -62,7 +63,10 @@ public:
     LaneletLoader(/* args */);
     ~LaneletLoader();
 
-    bool loadLanelet2Map(const std::string &path);
+    void loadLanelet2Map(const std::string &path);
     void mapProcessing(lanelet::LaneletMapPtr &t_map);
-    void renderlanelet(glk::GLSLShader &shader, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms);
+    void mapLines(glk::GLSLShader &shader);
+    void crosswalks(glk::GLSLShader &shader);
+    void stripes(glk::GLSLShader &shader);
+    bool isLoaded() const;
 };

@@ -39,6 +39,8 @@
 #include <glk/frame_buffer.hpp>
 #include <glk/TextRendering.hpp>
 #include "glk/PclLoader.hpp"
+#include "glk/LaneletLoader.hpp"
+#include "glk/modelUpload.hpp"
 
 #include <guik/gl_canvas.hpp>
 #include <guik/camera_control.hpp>
@@ -55,17 +57,6 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <map>
-
-// lanelet 2
-#include <lanelet2_io/Io.h>
-#include <lanelet2_projection/UTM.h>
-#include <lanelet2_projection/LocalCartesian.h>
-#include <lanelet2_routing/Route.h>
-#include <lanelet2_routing/RoutingCost.h>
-#include <lanelet2_routing/RoutingGraph.h>
-#include <lanelet2_traffic_rules/TrafficRulesFactory.h>
-#include <lanelet2_core/geometry/Point.h>
-using namespace lanelet;
 
 static Eigen::Isometry3f toEigen(const geometry_msgs::msg::Transform &t)
 {
@@ -94,16 +85,6 @@ struct CloudTopic
     GLuint vao = 0;
     GLuint vbo = 0;
     size_t num_points = 0;
-};
-
-struct PlyMesh
-{
-    GLuint vao = 0;
-    GLuint vbo = 0;
-    GLuint ebo = 0; // Element buffer object
-    size_t vertex_count = 0;
-    size_t index_count = 0; // Total number of indices
-    std::string frame_id;
 };
 
 class Ros2GLViewer : public guik::Application
@@ -567,7 +548,7 @@ public:
             if (ImGui::Button("OK"))
             {
                 // construct the buffer from the file
-                pcd_loader_.PointCloudBuffer(pcd_path, pcd_frame);
+                pcd_loader_.PointCloudBuffer(pcd_path, pcd_frame, false);
                 show_load_input_pcd = false;
             }
             // TF
@@ -617,8 +598,7 @@ public:
             if (ImGui::Button("OK"))
             {
                 // construct the buffer from the file
-                loadLanelet2Map(laneletmap_path);
-                has_lanelet2_map_ = true;
+                lanelet_loader_.loadLanelet2Map(laneletmap_path);
                 show_load_input_lanelet_map = false;
             }
         }
@@ -639,7 +619,7 @@ public:
             if (ImGui::Button("OK"))
             {
                 // construct the buffer from the file
-                loaded_mesh_map = loadPlyBinaryLE(meshmap_path);
+                loaded_mesh_map = model_upload_.loadPlyBinaryLE(meshmap_path);
                 mesh_map_loaded = true;
                 show_load_input_map_element = false;
             }
@@ -694,8 +674,8 @@ public:
             {
                 try
                 {
-                    loaded_mesh = loadPlyBinaryLE(filepath);
-                    mesh_loaded = true;
+                    loaded_mesh_robot = model_upload_.loadPlyBinaryLE(filepath);
+                    mesh_loaded_robot = true;
                     const std::string &frame_id = available_frames_[selected_ply_frame];
 
                     std::cout << green
@@ -706,7 +686,7 @@ public:
                               << reset
                               << std::endl;
 
-                    loaded_mesh.frame_id = frame_id;
+                    loaded_mesh_robot.frame_id = frame_id;
                 }
                 catch (const std::exception &e)
                 {
@@ -900,107 +880,26 @@ public:
             }
         }
 
-        // if (has_pcd_setted)
-        // {
-        //     // draw the PCD points
-        //     shader.set_uniform("point_scale", 0.0f);
-        //     shader.set_uniform("point_size", pcd_point_size_);
-        //     shader.set_uniform("color_mode", 0);
-
-        //     Eigen::Isometry3f model = Eigen::Isometry3f::Identity();
-        //     {
-        //         std::lock_guard<std::mutex> lk(tf_mutex_);
-        //         auto it = frame_transforms_.find(pcd_frame_id_);
-        //         if (it != frame_transforms_.end())
-        //             model = it->second;
-        //     }
-        //     shader.set_uniform("model_matrix", model.matrix());
-        //     glBindVertexArray(_vao);
-        //     glDrawArrays(GL_POINTS, 0, GLsizei(pcd_num_points));
-        //     glBindVertexArray(0);
-        // }
-
         if (pcd_loader_.isLoaded() || pcd_loader_.getPointCount() != 0)
         {
             pcd_loader_.renderpcl(shader, tf_mutex_, frame_transforms_);
         }
 
-        if (mesh_loaded)
+        if (mesh_loaded_robot)
         {
-            Eigen::Isometry3f model = Eigen::Isometry3f::Identity();
-            {
-                std::lock_guard<std::mutex> lk(tf_mutex_);
-                auto it = frame_transforms_.find(loaded_mesh.frame_id);
-                if (it != frame_transforms_.end())
-                    model = it->second;
-            }
-
-            shader.set_uniform("color_mode", 4);
-            shader.set_uniform("model_matrix", model.matrix());
-            // shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f)); // White
-
-            glBindVertexArray(loaded_mesh.vao);
-            glDrawElements(
-                GL_TRIANGLES,
-                GLsizei(loaded_mesh.index_count),
-                GL_UNSIGNED_INT,
-                nullptr);
-            glBindVertexArray(0);
+            model_upload_.renderMesh(loaded_mesh_robot, shader, tf_mutex_, frame_transforms_);
         }
 
         if (mesh_map_loaded)
         {
-            shader.set_uniform("color_mode", 4);
-            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-            shader.set_uniform("model_matrix", T.matrix());
-
-            glBindVertexArray(loaded_mesh_map.vao);
-            glDrawElements(
-                GL_TRIANGLES,
-                GLsizei(loaded_mesh_map.index_count),
-                GL_UNSIGNED_INT,
-                nullptr);
-            glBindVertexArray(0);
+            model_upload_.renderMesh(loaded_mesh_map, shader, tf_mutex_, frame_transforms_);
         }
 
-        glLineWidth(1.0f); // try 5 px
-
-        if (map_lines_count_ > 0 && map_lines_vao_ != 0)
+        if (lanelet_loader_.isLoaded())
         {
-            shader.set_uniform("color_mode", 1);                                                 // flat color
-            shader.set_uniform("material_color", Eigen::Vector4f(0.459f, 0.576f, 0.686f, 0.8f)); // yellow
-            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-            shader.set_uniform("model_matrix", T.matrix());
-            glBindVertexArray(map_lines_vao_);
-            glDrawArrays(GL_LINES, 0, GLsizei(map_lines_count_));
-            glBindVertexArray(0);
-        }
-
-        glLineWidth(1.0f);
-
-        if (crosswalk_tris_count_ > 0 && crosswalk_vao_ != 0)
-        {
-            // flat color mode
-            shader.set_uniform("color_mode", 1);
-            // RGBA: here white, but you could pick e.g. (1,1,0,1) for yellow zebra stripes
-            shader.set_uniform("material_color", Eigen::Vector4f(0.545f, 0.627f, 0.643f, 1.0f));
-            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-            shader.set_uniform("model_matrix", T.matrix());
-
-            glBindVertexArray(crosswalk_vao_);
-            glDrawArrays(GL_TRIANGLES, 0, GLsizei(crosswalk_tris_count_));
-            glBindVertexArray(0);
-        }
-
-        if (stripe_tris_count_ > 0)
-        {
-            shader.set_uniform("color_mode", 1); // flat color
-            shader.set_uniform("material_color", Eigen::Vector4f(0.918f, 0.918f, 0.918f, 1.0f));
-            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-            shader.set_uniform("model_matrix", T.matrix());
-            glBindVertexArray(stripe_vao_);
-            glDrawArrays(GL_TRIANGLES, 0, GLsizei(stripe_tris_count_));
-            glBindVertexArray(0);
+            lanelet_loader_.mapLines(shader);
+            lanelet_loader_.crosswalks(shader);
+            lanelet_loader_.stripes(shader);
         }
 
         // 10) blinking red light with 2 s OFF, 4 s ON
@@ -1448,469 +1347,6 @@ public:
         }
     }
 
-    PlyMesh loadPlyBinaryLE(const std::string &path)
-    {
-        std::ifstream in{path, std::ios::binary};
-        if (!in)
-            throw std::runtime_error("Failed to open PLY: " + path);
-
-        bool binary_le = false;
-        size_t vertex_count = 0, face_count = 0;
-        struct Property
-        {
-            std::string name, type;
-        };
-        std::vector<Property> vertexProps;
-        bool inVertexElement = false;
-        std::string line;
-
-        size_t idxX = -1, idxY = -1, idxZ = -1, idxR = -1, idxG = -1, idxB = -1;
-
-        while (std::getline(in, line))
-        {
-            if (line.rfind("format", 0) == 0 && line.find("binary_little_endian") != std::string::npos)
-                binary_le = true;
-            if (line.rfind("element vertex", 0) == 0)
-            {
-                std::istringstream ss(line);
-                std::string tmp;
-                ss >> tmp >> tmp >> vertex_count;
-                inVertexElement = true;
-            }
-            else if (line.rfind("element face", 0) == 0)
-            {
-                std::istringstream ss(line);
-                std::string tmp;
-                ss >> tmp >> tmp >> face_count;
-                inVertexElement = false;
-            }
-            else if (inVertexElement && line.rfind("property", 0) == 0)
-            {
-                std::istringstream ss(line);
-                std::string prop, type, name;
-                ss >> prop >> type >> name;
-                vertexProps.push_back({name, type});
-                if (name == "x")
-                    idxX = vertexProps.size() - 1;
-                if (name == "y")
-                    idxY = vertexProps.size() - 1;
-                if (name == "z")
-                    idxZ = vertexProps.size() - 1;
-                if (name == "red")
-                    idxR = vertexProps.size() - 1;
-                if (name == "green")
-                    idxG = vertexProps.size() - 1;
-                if (name == "blue")
-                    idxB = vertexProps.size() - 1;
-            }
-            if (line == "end_header")
-                break;
-        }
-
-        if (!binary_le)
-            throw std::runtime_error("Only binary_little_endian PLY supported");
-        if (vertexProps.size() < 3)
-            throw std::runtime_error("PLY header: need at least x,y,z properties");
-
-        struct Vertex
-        {
-            float x, y, z;
-            uint8_t r, g, b;
-        };
-        std::vector<Vertex> verts(vertex_count);
-
-        // --- Read vertex data with correct types ---
-        for (size_t i = 0; i < vertex_count; ++i)
-        {
-            float x = 0, y = 0, z = 0;
-            uint8_t r = 255, g = 255, b = 255;
-            for (size_t j = 0; j < vertexProps.size(); ++j)
-            {
-                if (vertexProps[j].type == "float")
-                {
-                    float v;
-                    in.read(reinterpret_cast<char *>(&v), sizeof(float));
-                    if (j == idxX)
-                        x = v;
-                    if (j == idxY)
-                        y = v;
-                    if (j == idxZ)
-                        z = v;
-                }
-                else if (vertexProps[j].type == "uchar")
-                {
-                    uint8_t v;
-                    in.read(reinterpret_cast<char *>(&v), sizeof(uint8_t));
-                    if (j == idxR)
-                        r = v;
-                    if (j == idxG)
-                        g = v;
-                    if (j == idxB)
-                        b = v;
-                }
-                else
-                {
-                    // skip other types (e.g. alpha, s, t)
-                    if (vertexProps[j].type == "uint")
-                    {
-                        uint32_t dummy;
-                        in.read(reinterpret_cast<char *>(&dummy), sizeof(uint32_t));
-                    }
-                    else
-                    {
-                        // Add more types if needed
-                        throw std::runtime_error("Unsupported property type: " + vertexProps[j].type);
-                    }
-                }
-            }
-            verts[i] = {x, y, z, r, g, b};
-        }
-
-        // --- Read faces (same as before) ---
-        std::vector<uint32_t> indices;
-        indices.reserve(face_count * 3);
-        for (size_t f = 0; f < face_count; ++f)
-        {
-            uint8_t nVerts = 0;
-            in.read(reinterpret_cast<char *>(&nVerts), sizeof(nVerts));
-            if (!in)
-                throw std::runtime_error("Unexpected EOF in face data");
-
-            std::vector<uint32_t> faceIdx(nVerts);
-            in.read(reinterpret_cast<char *>(faceIdx.data()), nVerts * sizeof(uint32_t));
-            if (!in)
-                throw std::runtime_error("Unexpected EOF in face data");
-
-            if (nVerts == 3)
-            {
-                indices.insert(indices.end(), faceIdx.begin(), faceIdx.end());
-            }
-            else
-            {
-                for (uint8_t k = 1; k + 1 < nVerts; ++k)
-                {
-                    indices.push_back(faceIdx[0]);
-                    indices.push_back(faceIdx[k]);
-                    indices.push_back(faceIdx[k + 1]);
-                }
-            }
-        }
-
-        // --- Upload to OpenGL (same as before) ---
-        PlyMesh mesh;
-        mesh.vertex_count = vertex_count;
-        mesh.index_count = indices.size();
-
-        glGenVertexArrays(1, &mesh.vao);
-        glGenBuffers(1, &mesh.vbo);
-        glGenBuffers(1, &mesh.ebo);
-
-        glBindVertexArray(mesh.vao);
-
-        glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
-        glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex), verts.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)0);
-        glEnableVertexAttribArray(4);
-        glVertexAttribPointer(4, 3, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)(3 * sizeof(float)));
-
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint32_t), indices.data(), GL_STATIC_DRAW);
-
-        glBindVertexArray(0);
-        return mesh;
-    }
-
-    // lanelet2 map loading
-    void loadLanelet2Map(const std::string &path)
-    {
-        std::cout << "Loading Lanelet2 map from: " << path << std::endl;
-        lanelet::Origin origin({49, 8.4});
-        lanelet::projection::LocalCartesianProjector projector(origin);
-        try
-        {
-            lanelet::LaneletMapPtr map = lanelet::load(path, projector);
-            std::cout << green << "Loaded Lanelet2 map with " << map->laneletLayer.size() << " lanelets." << reset << std::endl;
-            has_lanelet2_map_setted_ = true;
-            map_path_ = path;
-
-            for (auto &point : map->pointLayer)
-            {
-                point.x() = point.attribute("local_x").asDouble().value();
-                point.y() = point.attribute("local_y").asDouble().value();
-            }
-            mapProcessing(map);
-        }
-        catch (const std::exception &e)
-        {
-            std::cerr << red << "Failed to load Lanelet2 map: " << e.what() << reset << std::endl;
-            has_lanelet2_map_setted_ = false;
-        }
-    }
-
-    void mapProcessing(lanelet::LaneletMapPtr &t_map)
-    {
-
-        int crosswalk_count = 0;
-        int road_element_count = 0;
-        float z_offset = 0.08f;
-        map_lines_.clear();
-        stripe_lines_.clear();
-        crosswalk_lines_.clear();
-        stripe_tris_.clear();
-        // Iterate over the lanelets in the map
-        for (const auto &ll : t_map->laneletLayer)
-        {
-            std::vector<lanelet::ConstLineString3d> bounds;
-            bounds.push_back(ll.leftBound());
-            bounds.push_back(ll.rightBound());
-            if (ll.hasAttribute(lanelet::AttributeName::Subtype) &&
-                ll.attribute(lanelet::AttributeName::Subtype).value() == lanelet::AttributeValueString::Crosswalk)
-            {
-                std::cout << "Crosswalk id: " << ll.id() << std::endl;
-                crosswalk_count++;
-
-                double max_z = std::numeric_limits<double>::lowest();
-                for (const auto &point : ll.leftBound())
-                {
-                    if (point.z() > max_z)
-                    {
-                        max_z = point.z();
-                    }
-                }
-
-                // --- Store crosswalk polygon as a closed loop --
-                std::vector<Eigen::Vector3f> polygon;
-                // Left bound (forward)
-                for (const auto &point : ll.leftBound())
-                    // polygon.emplace_back(point.x(), point.y(), point.z());
-                    polygon.emplace_back(point.x(), point.y(), max_z); // Use max_z for all points
-
-                // Right bound (reverse)
-                for (int i = ll.rightBound().size() - 1; i >= 0; --i)
-                    // polygon.emplace_back(ll.rightBound()[i].x(), ll.rightBound()[i].y(), ll.rightBound()[i].z());
-                    polygon.emplace_back(ll.rightBound()[i].x(), ll.rightBound()[i].y(), max_z); // Use max_z for all points
-
-                // Close the loop
-                polygon.push_back(polygon.front());
-                crosswalk_polygons_.push_back(polygon);
-
-                // print one point of the crosswalk polygon
-                std::cout << "Crosswalk polygon point: "
-                          << polygon[0].x() << ", "
-                          << polygon[0].y() << ", "
-                          << polygon[0].z() << std::endl;
-
-                crosswalk_tris_.clear();
-                for (auto &poly : crosswalk_polygons_)
-                {
-                    // fan-triangulate around poly[0]:
-                    for (size_t i = 1; i + 1 < poly.size(); ++i)
-                    {
-                        crosswalk_tris_.push_back(poly[0]);
-                        crosswalk_tris_.push_back(poly[i]);
-                        crosswalk_tris_.push_back(poly[i + 1]);
-                    }
-                }
-                crosswalk_tris_count_ = crosswalk_tris_.size();
-
-                // zebra stripes
-                int num_stripes = 5;
-                double left_bound_length = 0.0;
-                for (size_t i = 0; i < ll.leftBound().size() - 1; ++i)
-                {
-                    left_bound_length += std::sqrt(
-                        std::pow(ll.leftBound()[i + 1].x() - ll.leftBound()[i].x(), 2) +
-                        std::pow(ll.leftBound()[i + 1].y() - ll.leftBound()[i].y(), 2) +
-                        std::pow(ll.leftBound()[i + 1].z() - ll.leftBound()[i].z(), 2));
-                }
-                std::cout << "----->left_bound_length: " << left_bound_length << std::endl;
-
-                if (left_bound_length > 5.0)
-                {
-                    num_stripes += static_cast<int>((left_bound_length - 5.0) / 1.0) * 1;
-                }
-
-                std::cout << "----->num_stripes: " << num_stripes << std::endl;
-
-                double stripe_length = left_bound_length / (2 * num_stripes);
-                for (int stripe_idx = 0; stripe_idx < num_stripes; ++stripe_idx)
-                {
-                    std::vector<Eigen::Vector3f> stripe_polygon;
-                    double start_dist = stripe_idx * 2 * stripe_length;
-                    double end_dist = start_dist + stripe_length;
-
-                    // Add points for the stripe from the left bound
-                    double accumulated_length = 0.0;
-                    // Eigen::Vector2d start_left, end_left;
-                    Eigen::Vector3f start_left, end_left;
-                    bool start_left_set = false, end_left_set = false;
-                    for (size_t i = 0; i < ll.leftBound().size() - 1; ++i)
-                    {
-                        double segment_length = std::sqrt(
-                            std::pow(ll.leftBound()[i + 1].x() - ll.leftBound()[i].x(), 2) +
-                            std::pow(ll.leftBound()[i + 1].y() - ll.leftBound()[i].y(), 2));
-
-                        if (accumulated_length + segment_length > start_dist && !start_left_set)
-                        {
-                            double ratio = (start_dist - accumulated_length) / segment_length;
-                            start_left.x() = ll.leftBound()[i].x() + ratio * (ll.leftBound()[i + 1].x() - ll.leftBound()[i].x());
-                            start_left.y() = ll.leftBound()[i].y() + ratio * (ll.leftBound()[i + 1].y() - ll.leftBound()[i].y());
-                            start_left.z() = max_z + z_offset; // Use the maximum z from the left bound
-                            start_left_set = true;
-                        }
-                        if (accumulated_length + segment_length > end_dist && !end_left_set)
-                        {
-                            double ratio = (end_dist - accumulated_length) / segment_length;
-                            end_left.x() = ll.leftBound()[i].x() + ratio * (ll.leftBound()[i + 1].x() - ll.leftBound()[i].x());
-                            end_left.y() = ll.leftBound()[i].y() + ratio * (ll.leftBound()[i + 1].y() - ll.leftBound()[i].y());
-                            end_left.z() = max_z + z_offset; // Use the maximum z from the left bound
-                            end_left_set = true;
-                            break;
-                        }
-                        accumulated_length += segment_length;
-                    }
-                    if (start_left_set && end_left_set)
-                    {
-                        stripe_polygon.push_back(start_left);
-                        stripe_polygon.push_back(end_left);
-                    }
-                    // Add points for the stripe from the right bound
-                    accumulated_length = 0.0;
-                    Eigen::Vector3f start_right, end_right;
-                    bool start_right_set = false, end_right_set = false;
-                    for (size_t i = 0; i < ll.rightBound().size() - 1; ++i)
-                    {
-                        double segment_length = std::sqrt(
-                            std::pow(ll.rightBound()[i + 1].x() - ll.rightBound()[i].x(), 2) +
-                            std::pow(ll.rightBound()[i + 1].y() - ll.rightBound()[i].y(), 2));
-
-                        if (accumulated_length + segment_length > start_dist && !start_right_set)
-                        {
-                            double ratio = (start_dist - accumulated_length) / segment_length;
-                            start_right.x() = ll.rightBound()[i].x() + ratio * (ll.rightBound()[i + 1].x() - ll.rightBound()[i].x());
-                            start_right.y() = ll.rightBound()[i].y() + ratio * (ll.rightBound()[i + 1].y() - ll.rightBound()[i].y());
-                            start_right.z() = max_z + z_offset; // Use the maximum z from the right bound
-                            start_right_set = true;
-                        }
-                        if (accumulated_length + segment_length > end_dist && !end_right_set)
-                        {
-                            double ratio = (end_dist - accumulated_length) / segment_length;
-                            end_right.x() = ll.rightBound()[i].x() + ratio * (ll.rightBound()[i + 1].x() - ll.rightBound()[i].x());
-                            end_right.y() = ll.rightBound()[i].y() + ratio * (ll.rightBound()[i + 1].y() - ll.rightBound()[i].y());
-                            end_right.z() = max_z + z_offset; // Use the maximum z from the right bound
-                            end_right_set = true;
-                            break;
-                        }
-                        accumulated_length += segment_length;
-                    }
-                    if (start_right_set && end_right_set)
-                    {
-                        stripe_polygon.push_back(end_right);
-                        stripe_polygon.push_back(start_right);
-                    }
-
-                    // Close the polygon by adding the first point again
-                    if (stripe_polygon.size() >= 4)
-                    {
-                        stripe_polygon.push_back(stripe_polygon.front());
-                    }
-
-                    if (stripe_polygon.size() >= 3)
-                    {
-                        // triangulate this one stripe:
-                        for (size_t j = 1; j + 1 < stripe_polygon.size(); ++j)
-                        {
-                            stripe_tris_.push_back(stripe_polygon[0]);
-                            stripe_tris_.push_back(stripe_polygon[j]);
-                            stripe_tris_.push_back(stripe_polygon[j + 1]);
-                        }
-                    }
-                }
-            }
-            else
-            {
-                road_element_count++;
-                for (const auto &bound : bounds)
-                {
-                    // std::cout << "Road element id: " << ll.id() << " bound: " << bound.id() << std::endl;
-                    // Add the points of the bounds
-                    for (size_t i = 1; i < bound.size(); ++i)
-                    {
-                        // std::cout << "Road element id: " << ll.id() << " bound: " << bound.id() << " point: " << point.id() << std::endl;
-                        auto p0 = bound[i - 1];
-                        auto p1 = bound[i];
-                        map_lines_.emplace_back(p0.x(), p0.y(), p0.z());
-                        map_lines_.emplace_back(p1.x(), p1.y(), p1.z());
-                    }
-                }
-            }
-        }
-        map_lines_count_ = map_lines_.size();
-        // Upload to OpenGL
-        if (map_lines_vao_ == 0)
-        {
-            glGenVertexArrays(1, &map_lines_vao_);
-            glGenBuffers(1, &map_lines_vbo_);
-        }
-        glBindVertexArray(map_lines_vao_);
-        glBindBuffer(GL_ARRAY_BUFFER, map_lines_vbo_);
-        glBufferData(GL_ARRAY_BUFFER, map_lines_.size() * sizeof(Eigen::Vector3f), map_lines_.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Eigen::Vector3f), (void *)0);
-        glBindVertexArray(0);
-
-        std::cout << blue << "----> Number of crosswalk lanelets: " << crosswalk_count << reset << std::endl;
-        std::cout << blue << "----> Number of road elements: " << road_element_count << reset << std::endl;
-
-        if (crosswalk_vao_ == 0)
-        {
-            glGenVertexArrays(1, &crosswalk_vao_);
-            glGenBuffers(1, &crosswalk_vbo_);
-        }
-        glBindVertexArray(crosswalk_vao_);
-        glBindBuffer(GL_ARRAY_BUFFER, crosswalk_vbo_);
-        glBufferData(
-            GL_ARRAY_BUFFER,
-            crosswalk_tris_count_ * sizeof(Eigen::Vector3f),
-            crosswalk_tris_.data(),
-            GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(
-            0, // attribute 0 = position
-            3, GL_FLOAT, GL_FALSE,
-            sizeof(Eigen::Vector3f),
-            (void *)0);
-        glBindVertexArray(0);
-
-        std::cout << blue << "----> Number of crosswalk lines: " << crosswalk_lines_count_ << reset << std::endl;
-
-        // --- after your zebra‐stripe generation loop ---
-        stripe_tris_count_ = stripe_tris_.size();
-        // upload to GPU
-        if (stripe_vao_ == 0)
-        {
-            glGenVertexArrays(1, &stripe_vao_);
-            glGenBuffers(1, &stripe_vbo_);
-        }
-        glBindVertexArray(stripe_vao_);
-        glBindBuffer(GL_ARRAY_BUFFER, stripe_vbo_);
-        glBufferData(
-            GL_ARRAY_BUFFER,
-            stripe_tris_count_ * sizeof(Eigen::Vector3f),
-            stripe_tris_.data(),
-            GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(
-            0, 3, GL_FLOAT, GL_FALSE,
-            sizeof(Eigen::Vector3f),
-            (void *)0);
-        glBindVertexArray(0);
-
-        std::cout << blue << "----> Number of stripe lines: " << stripe_lines_count_ << reset << std::endl;
-        std::cout << blue << "----> Number of stripe triangles: " << stripe_tris_count_ << reset << std::endl;
-    }
-
 private:
     // color for the terminals
     std::string green = "\033[1;32m";
@@ -1986,39 +1422,6 @@ private:
     float topic_point_size_ = 4.0f;
     float pcd_point_size_ = 10.0f;
 
-    // mesh ply variables
-    PlyMesh loaded_mesh;
-    bool mesh_loaded = false;
-
-    // mesh map variables
-    PlyMesh loaded_mesh_map;
-    bool mesh_map_loaded = false;
-
-    // lanelet2 map varianles
-    std::string map_path_;
-    bool has_lanelet2_map_ = false;
-    bool has_lanelet2_map_setted_ = false;
-    GLuint map_lines_vao_ = 0, map_lines_vbo_ = 0;
-    size_t map_lines_count_ = 0;
-    std::vector<Eigen::Vector3f> map_lines_;
-    std::vector<std::vector<Eigen::Vector3f> > crosswalk_polygons_;
-
-    GLuint crosswalk_vao_ = 0;
-    GLuint crosswalk_vbo_ = 0;
-    size_t crosswalk_lines_count_ = 0;
-    std::vector<Eigen::Vector3f> crosswalk_lines_;
-
-    std::vector<Eigen::Vector3f> crosswalk_tris_;
-    size_t crosswalk_tris_count_ = 0;
-
-    size_t stripe_lines_count_ = 0;
-    std::vector<Eigen::Vector3f> stripe_lines_;
-    GLuint stripe_vao_ = 0;
-    GLuint stripe_vbo_ = 0;
-
-    std::vector<Eigen::Vector3f> stripe_tris_;
-    size_t stripe_tris_count_ = 0;
-
     // lights
     std::chrono::steady_clock::time_point blink_start_ = std::chrono::steady_clock::now();
 
@@ -2028,6 +1431,20 @@ private:
     // PCD loader
     PclLoader pcd_loader_;
     std::string pcd_frame = "map";
+
+    // lanelet2 loader
+    LaneletLoader lanelet_loader_;
+
+    // for ply model upload
+    modelUpload model_upload_;
+
+    // mesh ply variables
+    PlyMesh loaded_mesh_robot;
+    bool mesh_loaded_robot = false;
+
+    // mesh map variables
+    PlyMesh loaded_mesh_map;
+    bool mesh_map_loaded = false;
 };
 
 int main(int argc, char **argv)

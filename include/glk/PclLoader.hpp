@@ -36,7 +36,7 @@ private:
 public:
     PclLoader(/* args */);
     ~PclLoader();
-    void PointCloudBuffer(const std::string &cloud_filename, std::string pcd_frame_id);
+    void PointCloudBuffer(const std::string &cloud_filename, std::string pcd_frame_id, bool enable_downsampling = false);
     void renderpcl(glk::GLSLShader &shader, std::mutex &tf_mutex, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms);
     bool isLoaded() const;
     size_t getPointCount() const;

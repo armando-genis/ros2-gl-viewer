@@ -22,8 +22,8 @@ struct PlyMesh
     GLuint vbo = 0;
     GLuint ebo = 0; // Element buffer object
     size_t vertex_count = 0;
-    size_t index_count = 0; // Total number of indices
-    std::string frame_id;
+    size_t index_count = 0;       // Total number of indices
+    std::string frame_id = "map"; // Default frame ID
 };
 
 class modelUpload

@@ -9,7 +9,12 @@ LaneletLoader::~LaneletLoader()
 {
 }
 
-void LaneletLoader::renderlanelet(glk::GLSLShader &shader, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms)
+bool LaneletLoader::isLoaded() const
+{
+    return has_lanelet2_map_setted_;
+}
+
+void LaneletLoader::mapLines(glk::GLSLShader &shader)
 {
     if (map_lines_count_ > 0 && map_lines_vao_ != 0)
     {
@@ -21,7 +26,10 @@ void LaneletLoader::renderlanelet(glk::GLSLShader &shader, const std::unordered_
         glDrawArrays(GL_LINES, 0, GLsizei(map_lines_count_));
         glBindVertexArray(0);
     }
+}
 
+void LaneletLoader::crosswalks(glk::GLSLShader &shader)
+{
     if (crosswalk_tris_count_ > 0 && crosswalk_vao_ != 0)
     {
         // flat color mode
@@ -35,7 +43,10 @@ void LaneletLoader::renderlanelet(glk::GLSLShader &shader, const std::unordered_
         glDrawArrays(GL_TRIANGLES, 0, GLsizei(crosswalk_tris_count_));
         glBindVertexArray(0);
     }
+}
 
+void LaneletLoader::stripes(glk::GLSLShader &shader)
+{
     if (stripe_tris_count_ > 0)
     {
         shader.set_uniform("color_mode", 1); // flat color
@@ -48,7 +59,7 @@ void LaneletLoader::renderlanelet(glk::GLSLShader &shader, const std::unordered_
     }
 }
 
-bool LaneletLoader::loadLanelet2Map(const std::string &path)
+void LaneletLoader::loadLanelet2Map(const std::string &path)
 {
     std::cout << "Loading Lanelet2 map from: " << path << std::endl;
     lanelet::Origin origin({49, 8.4});
@@ -57,6 +68,7 @@ bool LaneletLoader::loadLanelet2Map(const std::string &path)
     {
         lanelet::LaneletMapPtr map = lanelet::load(path, projector);
         std::cout << green << "Loaded Lanelet2 map with " << map->laneletLayer.size() << " lanelets." << reset << std::endl;
+        has_lanelet2_map_setted_ = true;
         map_path_ = path;
 
         for (auto &point : map->pointLayer)
@@ -65,12 +77,11 @@ bool LaneletLoader::loadLanelet2Map(const std::string &path)
             point.y() = point.attribute("local_y").asDouble().value();
         }
         mapProcessing(map);
-        return true;
     }
     catch (const std::exception &e)
     {
         std::cerr << red << "Failed to load Lanelet2 map: " << e.what() << reset << std::endl;
-        return false;
+        has_lanelet2_map_setted_ = false;
     }
 }
 
