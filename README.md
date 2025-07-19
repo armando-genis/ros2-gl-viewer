@@ -30,6 +30,8 @@ cmake ..
 cmake --build . -- -j$(nproc)
 sudo cmake --install .
 
+git clone https://github.com/jkuhlmann/cgltf.git
+wget https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
 
 cd /ros2-gl-viewer/third_party/gl3w
 python3 gl3w_gen.py

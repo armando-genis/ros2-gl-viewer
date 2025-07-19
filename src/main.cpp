@@ -118,6 +118,11 @@ public:
         }
         rclcpp::shutdown();
         text_renderer_.cleanupTextRendering();
+        // Cleanup GLB shader
+        if (glb_shader_program_ != 0)
+        {
+            glDeleteProgram(glb_shader_program_);
+        }
     }
 
     void setupCustomImGuiColors()
@@ -294,11 +299,20 @@ public:
         glfwSetCursorPosCallback(win, CursorPosCallback);
         glfwSetScrollCallback(win, ScrollCallback);
 
+        // ======= TEXT SHADER INITIALIZATION =======
         if (!text_renderer_.initTextRendering())
         {
             std::cerr << "Failed to initialize text rendering" << std::endl;
             return false;
         }
+
+        // ======= GLB SHADER INITIALIZATION =======
+        if (!model_upload_.createGLBShader(glb_shader_program_))
+        {
+            std::cerr << "Failed to create GLB shader" << std::endl;
+            return false;
+        }
+        std::cout << green << "Successfully initialized GLB shader" << reset << std::endl;
 
         return true;
     }
@@ -619,7 +633,7 @@ public:
             if (ImGui::Button("OK"))
             {
                 // construct the buffer from the file
-                loaded_mesh_map = model_upload_.loadPlyBinaryLE(meshmap_path);
+                loaded_mesh_map = model_upload_.loadModel(meshmap_path);
                 mesh_map_loaded = true;
                 show_load_input_map_element = false;
             }
@@ -636,7 +650,7 @@ public:
             show_load_input = !show_load_input;
         }
 
-        // /workspace/models/Buggy.ply
+        // /workspace/models/Buggy.gdl
         // /workspace/models/miniBuggy.ply
         // /workspace/models/miniBuggy_2.ply
         // /workspace/models/sdv.ply
@@ -674,7 +688,7 @@ public:
             {
                 try
                 {
-                    loaded_mesh_robot = model_upload_.loadPlyBinaryLE(filepath);
+                    loaded_mesh_robot = model_upload_.loadModel(filepath);
                     mesh_loaded_robot = true;
                     const std::string &frame_id = available_frames_[selected_ply_frame];
 
@@ -695,6 +709,81 @@ public:
                 show_load_input = false; // hide input after loading
             }
         }
+
+        // /workspace/models/drift.glb
+        // /workspace/models/buggy.glb
+        // /workspace/models/formula_uno_car.glb
+
+        static bool show_load_input_glb = false;
+        static char filepath_glb[256] = "";
+        static int selected_glb_frame = 0;
+
+        if (ImGui::Button("Load GLB"))
+            show_load_input_glb = !show_load_input_glb;
+
+        if (show_load_input_glb)
+        {
+            ImGui::InputText("GLB File", filepath_glb, sizeof(filepath_glb));
+            ImGui::Separator();
+            ImGui::Text("Assign to TF frame:");
+            ImGui::SameLine();
+
+            bool has = !available_frames_.empty();
+            // preview what would be loaded (or show “map”)
+            const char *preview = has
+                                      ? available_frames_[selected_glb_frame].c_str()
+                                      : "(map)";
+
+            if (has)
+            {
+                if (ImGui::BeginCombo("##glb_frames", preview))
+                {
+                    for (int i = 0; i < (int)available_frames_.size(); ++i)
+                    {
+                        bool sel = (selected_glb_frame == i);
+                        if (ImGui::Selectable(available_frames_[i].c_str(), sel))
+                            selected_glb_frame = i;
+                        if (sel)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No TF frames (using default)");
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Open"))
+            {
+                try
+                {
+                    // 1) load the mesh
+                    loaded_mesh_glb = model_upload_.loadModel(filepath_glb);
+                    mesh_glb_loaded = true;
+
+                    // 2) pick the frame based on your index (or "map" if none)
+                    const std::string frame_id = has
+                                                     ? available_frames_[selected_glb_frame]
+                                                     : "map";
+                    loaded_mesh_glb.frame_id = frame_id;
+
+                    // 3) log
+                    std::cout << green
+                              << "Loaded GLB mesh from: " << filepath_glb
+                              << " into frame: " << frame_id
+                              << reset << std::endl;
+                }
+                catch (const std::exception &e)
+                {
+                    std::cerr << "GLB load error: " << e.what() << std::endl;
+                }
+                show_load_input_glb = false;
+            }
+        }
+
+        // glb UPLOUD
 
         // ImGui::Separator();
 
@@ -893,6 +982,26 @@ public:
         if (mesh_map_loaded)
         {
             model_upload_.renderMesh(loaded_mesh_map, shader, tf_mutex_, frame_transforms_);
+        }
+
+        if (mesh_glb_loaded)
+        {
+            // Convert Eigen matrices to GLM for the GLB shader
+            glm::mat4 glm_view = glm::mat4(1.0f);
+            glm::mat4 glm_proj = glm::mat4(1.0f);
+
+            // Copy Eigen view matrix to GLM (column-major)
+            for (int i = 0; i < 4; ++i)
+            {
+                for (int j = 0; j < 4; ++j)
+                {
+                    glm_view[i][j] = view(j, i); // Note: transposed for column-major
+                    glm_proj[i][j] = proj(j, i); // Note: transposed for column-major
+                }
+            }
+
+            model_upload_.renderGLBMesh(loaded_mesh_glb, glb_shader_program_,
+                                        glm_view, glm_proj, tf_mutex_, frame_transforms_);
         }
 
         if (lanelet_loader_.isLoaded())
@@ -1437,6 +1546,7 @@ private:
 
     // for ply model upload
     modelUpload model_upload_;
+    GLuint glb_shader_program_ = 0;
 
     // mesh ply variables
     PlyMesh loaded_mesh_robot;
@@ -1445,6 +1555,10 @@ private:
     // mesh map variables
     PlyMesh loaded_mesh_map;
     bool mesh_map_loaded = false;
+
+    // mesh glb
+    PlyMesh loaded_mesh_glb;
+    bool mesh_glb_loaded = false;
 };
 
 int main(int argc, char **argv)

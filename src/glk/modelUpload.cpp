@@ -1,6 +1,14 @@
 #include <glk/modelUpload.hpp>
 #include <iostream>
 
+// GLB support libraries
+#define CGLTF_IMPLEMENTATION
+#include <cgltf.h>
+
+// Image loading library
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 modelUpload::modelUpload(/* args */)
 {
 }
@@ -9,6 +17,865 @@ modelUpload::~modelUpload()
 {
 }
 
+bool modelUpload::createGLBShader(GLuint &shader_program)
+{
+    const char *vertex_shader_source = R"(
+        #version 330 core
+        layout (location = 0) in vec3 position;
+        layout (location = 1) in vec3 normal;
+        layout (location = 2) in vec2 tex_coord;
+        
+        uniform mat4 view_matrix;
+        uniform mat4 projection_matrix;
+        uniform mat4 model_matrix;
+        
+        out vec3 frag_pos;
+        out vec3 frag_normal;
+        out vec2 frag_tex_coord;
+        
+        void main() {
+            vec4 world_pos = model_matrix * vec4(position, 1.0);
+            frag_pos = world_pos.xyz;
+            
+            // Transform normal to world space
+            mat3 normal_matrix = mat3(transpose(inverse(model_matrix)));
+            frag_normal = normalize(normal_matrix * normal);
+            
+            frag_tex_coord = tex_coord;
+            gl_Position = projection_matrix * view_matrix * world_pos;
+        }
+    )";
+
+    const char *fragment_shader_source = R"(
+        #version 330 core
+        in vec3 frag_pos;
+        in vec3 frag_normal;
+        in vec2 frag_tex_coord;
+        
+        uniform vec4 base_color;
+        uniform bool has_texture;
+        uniform sampler2D base_color_texture;
+        uniform float metallic_factor;
+        uniform float roughness_factor;
+        
+        out vec4 FragColor;
+        
+        void main() {
+            // Start with base color
+            vec4 albedo = base_color;
+            
+            // Sample texture if available
+            if (has_texture) {
+                vec4 tex_color = texture(base_color_texture, frag_tex_coord);
+                albedo = albedo * tex_color;
+            }
+            
+            // Calculate lighting
+            vec3 normal = normalize(frag_normal);
+            
+            // Main light source
+            vec3 light_dir = normalize(vec3(0.5, 1.0, 0.8));
+            vec3 light_color = vec3(1.0, 1.0, 1.0);
+            
+            // Ambient lighting
+            float ambient_strength = 0.3;
+            vec3 ambient = ambient_strength * light_color;
+            
+            // Diffuse lighting
+            float diff = max(dot(normal, light_dir), 0.0);
+            vec3 diffuse = diff * light_color * 0.6;
+            
+            // Simple specular (reduced for more realistic look)
+            float specular_strength = 0.2 * (1.0 - roughness_factor);
+            vec3 view_dir = normalize(-frag_pos);
+            vec3 reflect_dir = reflect(-light_dir, normal);
+            float spec = pow(max(dot(view_dir, reflect_dir), 0.0), 32);
+            vec3 specular = specular_strength * spec * light_color;
+            
+            // Combine lighting with albedo
+            vec3 result = (ambient + diffuse + specular) * albedo.rgb;
+            
+            FragColor = vec4(result, albedo.a);
+        }
+    )";
+
+    // ... rest of your shader compilation code remains the same ...
+
+    // Compile vertex shader
+    GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertex_shader, 1, &vertex_shader_source, NULL);
+    glCompileShader(vertex_shader);
+
+    // Check vertex shader compilation
+    GLint success;
+    glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        char info_log[512];
+        glGetShaderInfoLog(vertex_shader, 512, NULL, info_log);
+        std::cerr << "GLB Vertex shader compilation failed: " << info_log << std::endl;
+        return false;
+    }
+
+    // Compile fragment shader
+    GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragment_shader, 1, &fragment_shader_source, NULL);
+    glCompileShader(fragment_shader);
+
+    // Check fragment shader compilation
+    glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        char info_log[512];
+        glGetShaderInfoLog(fragment_shader, 512, NULL, info_log);
+        std::cerr << "GLB Fragment shader compilation failed: " << info_log << std::endl;
+        glDeleteShader(vertex_shader);
+        return false;
+    }
+
+    // Create and link program
+    shader_program = glCreateProgram();
+    glAttachShader(shader_program, vertex_shader);
+    glAttachShader(shader_program, fragment_shader);
+    glLinkProgram(shader_program);
+
+    // Check linking
+    glGetProgramiv(shader_program, GL_LINK_STATUS, &success);
+    if (!success)
+    {
+        char info_log[512];
+        glGetProgramInfoLog(shader_program, 512, NULL, info_log);
+        std::cerr << "GLB Shader program linking failed: " << info_log << std::endl;
+        glDeleteShader(vertex_shader);
+        glDeleteShader(fragment_shader);
+        return false;
+    }
+
+    // Clean up individual shaders
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+
+    std::cout << "Successfully created GLB shader program: " << shader_program << std::endl;
+    return true;
+}
+
+// Helper function to validate GLB file format
+bool modelUpload::validateGlbFile(const std::string &path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open())
+    {
+        return false;
+    }
+
+    // Check file size
+    file.seekg(0, std::ios::end);
+    std::streampos file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    if (file_size < 12)
+    { // GLB header is at least 12 bytes
+        return false;
+    }
+
+    // Check magic number (first 4 bytes should be "glTF")
+    char magic[4];
+    file.read(magic, 4);
+
+    return std::string(magic, 4) == "glTF";
+}
+
+// Helper function to get detailed cgltf error message
+std::string modelUpload::getCgltfErrorMessage(int result)
+{
+    switch (result)
+    {
+    case cgltf_result_success:
+        return "Success";
+    case cgltf_result_data_too_short:
+        return "Data too short";
+    case cgltf_result_unknown_format:
+        return "Unknown format";
+    case cgltf_result_invalid_json:
+        return "Invalid JSON";
+    case cgltf_result_invalid_gltf:
+        return "Invalid glTF structure";
+    case cgltf_result_invalid_options:
+        return "Invalid options";
+    case cgltf_result_file_not_found:
+        return "File not found";
+    case cgltf_result_io_error:
+        return "IO error";
+    case cgltf_result_out_of_memory:
+        return "Out of memory";
+    default:
+        return "Unknown error (code: " + std::to_string(result) + ")";
+    }
+}
+
+PlyMesh modelUpload::loadModel(const std::string &path)
+{
+    // determine file extension
+    auto pos = path.find_last_of('.') + 1;
+    std::string ext = (pos != std::string::npos) ? path.substr(pos) : "";
+    for (auto &c : ext)
+        c = ::tolower(c);
+
+    if (ext == "glb" || ext == "gltf")
+    {
+        return loadGlb(path);
+    }
+    else if (ext == "ply")
+    {
+        return loadPlyBinaryLE(path);
+    }
+    else
+    {
+        throw std::runtime_error("Unsupported model format: " + path);
+    }
+}
+
+GLuint modelUpload::loadTextureFromImage(const cgltf_image *image, const cgltf_data * /* gltf_data */)
+{
+    if (!image)
+        return 0;
+
+    GLuint texture_id = 0;
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+
+    // Load image data
+    unsigned char *image_data = nullptr;
+    int width = 0, height = 0, channels = 0;
+
+    if (image->buffer_view)
+    {
+        // Image is embedded in GLB
+        const cgltf_buffer_view *view = image->buffer_view;
+        const cgltf_buffer *buffer = view->buffer;
+
+        if (buffer->data)
+        {
+            const unsigned char *buffer_data = (const unsigned char *)buffer->data + view->offset;
+            image_data = stbi_load_from_memory(buffer_data, (int)view->size, &width, &height, &channels, 4);
+        }
+    }
+    else if (image->uri)
+    {
+        // External image file (less common in GLB)
+        image_data = stbi_load(image->uri, &width, &height, &channels, 4);
+    }
+
+    if (image_data)
+    {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        // Set texture parameters
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        stbi_image_free(image_data);
+        std::cout << "Loaded texture: " << width << "x" << height << " channels: " << channels << std::endl;
+    }
+    else
+    {
+        std::cerr << "Failed to load texture image" << std::endl;
+        glDeleteTextures(1, &texture_id);
+        texture_id = 0;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texture_id;
+}
+
+// ====================================
+// bgl mesh loading & rendering
+// ====================================
+
+PlyMesh modelUpload::loadGlb(const std::string &path)
+{
+    std::cout << "Attempting to load GLB file: " << path << std::endl;
+
+    // Check if file exists using filesystem
+    if (!std::filesystem::exists(path))
+    {
+        throw std::runtime_error("File does not exist: " + path);
+    }
+
+    // Check file size
+    std::error_code ec;
+    auto file_size = std::filesystem::file_size(path, ec);
+    if (ec)
+    {
+        throw std::runtime_error("Cannot get file size: " + path + " (" + ec.message() + ")");
+    }
+
+    if (file_size == 0)
+    {
+        throw std::runtime_error("File is empty: " + path);
+    }
+
+    std::cout << "File exists, size: " << file_size << " bytes" << std::endl;
+
+    // Validate GLB format
+    if (!validateGlbFile(path))
+    {
+        throw std::runtime_error("File is not a valid GLB format: " + path);
+    }
+
+    std::cout << "File appears to be valid GLB format" << std::endl;
+
+    // Initialize cgltf options - simplified version
+    cgltf_options options = {};
+    options.type = cgltf_file_type_invalid; // Auto-detect
+    options.json_token_count = 0;           // Use default
+
+    cgltf_data *data = nullptr;
+
+    // Parse the file
+    cgltf_result result = cgltf_parse_file(&options, path.c_str(), &data);
+    if (result != cgltf_result_success)
+    {
+        std::string error_msg = getCgltfErrorMessage(result);
+        throw std::runtime_error("Failed to parse glTF (" + error_msg + "): " + path);
+    }
+
+    std::cout << "Successfully parsed glTF file" << std::endl;
+
+    // Load buffers
+    result = cgltf_load_buffers(&options, data, path.c_str());
+    if (result != cgltf_result_success)
+    {
+        std::string error_msg = getCgltfErrorMessage(result);
+        cgltf_free(data);
+        throw std::runtime_error("Failed to load glTF buffers (" + error_msg + "): " + path);
+    }
+
+    // Validate the data
+    result = cgltf_validate(data);
+    if (result != cgltf_result_success)
+    {
+        std::string error_msg = getCgltfErrorMessage(result);
+        cgltf_free(data);
+        throw std::runtime_error("Invalid glTF data (" + error_msg + "): " + path);
+    }
+
+    std::cout << "glTF validation successful" << std::endl;
+
+    // Check for meshes
+    if (data->meshes_count == 0)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("No meshes in glTF: " + path);
+    }
+
+    std::cout << "Found " << data->meshes_count << " mesh(es)" << std::endl;
+
+    // Define Vertex structure first
+    struct Vertex
+    {
+        float px, py, pz;
+        float nx, ny, nz;
+        float u, v;
+    };
+
+    // Combine all meshes into a single mesh
+    std::vector<Vertex> all_vertices;
+    std::vector<uint32_t> all_indices;
+    GLuint texture_id = 0;
+    bool has_texture = false;
+    float base_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float metallic_factor = 0.0f;
+    float roughness_factor = 1.0f;
+
+    // Process each mesh
+    for (size_t mesh_idx = 0; mesh_idx < data->meshes_count; ++mesh_idx)
+    {
+        auto &gltfMesh = data->meshes[mesh_idx];
+        std::cout << "Processing mesh " << mesh_idx << std::endl;
+
+        if (gltfMesh.primitives_count == 0)
+        {
+            std::cout << "Mesh " << mesh_idx << " has no primitives, skipping" << std::endl;
+            continue;
+        }
+
+        std::cout << "Found " << gltfMesh.primitives_count << " primitive(s) in mesh " << mesh_idx << std::endl;
+
+        // Process each primitive in the mesh
+        for (size_t prim_idx = 0; prim_idx < gltfMesh.primitives_count; ++prim_idx)
+        {
+            auto &prim = gltfMesh.primitives[prim_idx];
+
+            // Find accessors
+            cgltf_accessor *posAcc = nullptr;
+            cgltf_accessor *normAcc = nullptr;
+            cgltf_accessor *uvAcc = nullptr;
+
+            std::cout << "Processing " << prim.attributes_count << " attributes for primitive " << prim_idx << std::endl;
+
+            for (size_t i = 0; i < prim.attributes_count; ++i)
+            {
+                auto &attr = prim.attributes[i];
+                if (attr.type == cgltf_attribute_type_position)
+                {
+                    posAcc = attr.data;
+                    std::cout << "Found POSITION attribute" << std::endl;
+                }
+                else if (attr.type == cgltf_attribute_type_normal)
+                {
+                    normAcc = attr.data;
+                    std::cout << "Found NORMAL attribute" << std::endl;
+                }
+                else if (attr.type == cgltf_attribute_type_texcoord)
+                {
+                    uvAcc = attr.data;
+                    std::cout << "Found TEXCOORD attribute" << std::endl;
+                }
+            }
+
+            if (!posAcc)
+            {
+                std::cout << "Missing POSITION accessor in primitive " << prim_idx << ", skipping" << std::endl;
+                continue;
+            }
+
+            if (!prim.indices)
+            {
+                std::cout << "Missing indices in primitive " << prim_idx << ", skipping" << std::endl;
+                continue;
+            }
+
+            // Extract material and texture information (use first material found)
+            if (prim.material && mesh_idx == 0 && prim_idx == 0)
+            {
+                const cgltf_material *material = prim.material;
+                std::cout << "Found material for primitive" << std::endl;
+
+                // Access PBR metallic roughness
+                const cgltf_pbr_metallic_roughness &pbr = material->pbr_metallic_roughness;
+
+                // Copy base color factor
+                for (int i = 0; i < 4; ++i)
+                {
+                    base_color[i] = pbr.base_color_factor[i];
+                }
+
+                metallic_factor = pbr.metallic_factor;
+                roughness_factor = pbr.roughness_factor;
+
+                std::cout << "Base color: (" << base_color[0] << ", " << base_color[1]
+                          << ", " << base_color[2] << ", " << base_color[3] << ")" << std::endl;
+                std::cout << "Metallic: " << metallic_factor << ", Roughness: " << roughness_factor << std::endl;
+
+                // Load base color texture if available
+                if (pbr.base_color_texture.texture)
+                {
+                    const cgltf_texture *texture = pbr.base_color_texture.texture;
+                    if (texture && texture->image)
+                    {
+                        std::cout << "Loading base color texture..." << std::endl;
+                        texture_id = loadTextureFromImage(texture->image, data);
+                        if (texture_id != 0)
+                        {
+                            has_texture = true;
+                            std::cout << "Successfully loaded texture with ID: " << texture_id << std::endl;
+                        }
+                    }
+                }
+            }
+
+            // Read vertices for this primitive
+            size_t vertexCount = posAcc->count;
+            std::cout << "Processing " << vertexCount << " vertices for primitive " << prim_idx << std::endl;
+
+            size_t vertex_offset = all_vertices.size();
+            all_vertices.resize(vertex_offset + vertexCount);
+            cgltf_float tmp[4] = {};
+
+            for (size_t i = 0; i < vertexCount; ++i)
+            {
+                size_t vert_idx = vertex_offset + i;
+
+                // Read position
+                if (cgltf_accessor_read_float(posAcc, i, tmp, 3) != 1)
+                {
+                    cgltf_free(data);
+                    throw std::runtime_error("Failed to read position data at vertex " + std::to_string(i));
+                }
+                all_vertices[vert_idx].px = tmp[0];
+                all_vertices[vert_idx].py = tmp[1];
+                all_vertices[vert_idx].pz = tmp[2];
+
+                // Read normal if available
+                if (normAcc)
+                {
+                    if (cgltf_accessor_read_float(normAcc, i, tmp, 3) != 1)
+                    {
+                        cgltf_free(data);
+                        throw std::runtime_error("Failed to read normal data at vertex " + std::to_string(i));
+                    }
+                    all_vertices[vert_idx].nx = tmp[0];
+                    all_vertices[vert_idx].ny = tmp[1];
+                    all_vertices[vert_idx].nz = tmp[2];
+                }
+                else
+                {
+                    all_vertices[vert_idx].nx = all_vertices[vert_idx].ny = all_vertices[vert_idx].nz = 0.0f;
+                }
+
+                // Read UV if available
+                if (uvAcc)
+                {
+                    if (cgltf_accessor_read_float(uvAcc, i, tmp, 2) != 1)
+                    {
+                        cgltf_free(data);
+                        throw std::runtime_error("Failed to read UV data at vertex " + std::to_string(i));
+                    }
+                    all_vertices[vert_idx].u = tmp[0];
+                    all_vertices[vert_idx].v = tmp[1];
+                }
+                else
+                {
+                    all_vertices[vert_idx].u = all_vertices[vert_idx].v = 0.0f;
+                }
+            }
+
+            // Read indices for this primitive
+            auto *idxAcc = prim.indices;
+            size_t indexCount = idxAcc->count;
+            std::cout << "Processing " << indexCount << " indices for primitive " << prim_idx << std::endl;
+
+            size_t index_offset = all_indices.size();
+            all_indices.resize(index_offset + indexCount);
+
+            // Check the component type to determine how to read indices
+            if (idxAcc->component_type == cgltf_component_type_r_8u)
+            {
+                // 8-bit indices
+                for (size_t i = 0; i < indexCount; ++i)
+                {
+                    cgltf_uint idx;
+                    if (cgltf_accessor_read_uint(idxAcc, i, &idx, 1) != 1)
+                    {
+                        cgltf_free(data);
+                        throw std::runtime_error("Failed to read index at position " + std::to_string(i));
+                    }
+                    all_indices[index_offset + i] = static_cast<uint32_t>(idx) + static_cast<uint32_t>(vertex_offset);
+                }
+            }
+            else if (idxAcc->component_type == cgltf_component_type_r_16u)
+            {
+                // 16-bit indices
+                for (size_t i = 0; i < indexCount; ++i)
+                {
+                    cgltf_uint idx;
+                    if (cgltf_accessor_read_uint(idxAcc, i, &idx, 1) != 1)
+                    {
+                        cgltf_free(data);
+                        throw std::runtime_error("Failed to read index at position " + std::to_string(i));
+                    }
+                    all_indices[index_offset + i] = static_cast<uint32_t>(idx) + static_cast<uint32_t>(vertex_offset);
+                }
+            }
+            else if (idxAcc->component_type == cgltf_component_type_r_32u)
+            {
+                // 32-bit indices
+                for (size_t i = 0; i < indexCount; ++i)
+                {
+                    cgltf_uint idx;
+                    if (cgltf_accessor_read_uint(idxAcc, i, &idx, 1) != 1)
+                    {
+                        cgltf_free(data);
+                        throw std::runtime_error("Failed to read index at position " + std::to_string(i));
+                    }
+                    all_indices[index_offset + i] = idx + static_cast<uint32_t>(vertex_offset);
+                }
+            }
+            else
+            {
+                cgltf_free(data);
+                throw std::runtime_error("Unsupported index component type: " + std::to_string(idxAcc->component_type));
+            }
+        }
+    }
+
+    std::cout << "Combined all meshes: " << all_vertices.size() << " total vertices, " << all_indices.size() << " total indices" << std::endl;
+
+    // Upload combined mesh to OpenGL with detailed error checking
+    std::cout << "Uploading combined mesh to OpenGL..." << std::endl;
+
+    PlyMesh mesh;
+    mesh.vertex_count = all_vertices.size();
+    mesh.index_count = all_indices.size();
+
+    // Check for any existing OpenGL errors first
+    GLenum error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        std::cout << "Warning: OpenGL error before mesh upload: " << error << std::endl;
+    }
+
+    // Generate VAO, VBO, EBO
+    glGenVertexArrays(1, &mesh.vao);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error generating VAO: " + std::to_string(error));
+    }
+
+    glGenBuffers(1, &mesh.vbo);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error generating VBO: " + std::to_string(error));
+    }
+
+    glGenBuffers(1, &mesh.ebo);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error generating EBO: " + std::to_string(error));
+    }
+
+    std::cout << "Generated VAO: " << mesh.vao << ", VBO: " << mesh.vbo << ", EBO: " << mesh.ebo << std::endl;
+
+    // Bind VAO
+    glBindVertexArray(mesh.vao);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error binding VAO: " + std::to_string(error));
+    }
+
+    // Upload vertex data
+    glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error binding VBO: " + std::to_string(error));
+    }
+
+    size_t vertex_data_size = all_vertices.size() * sizeof(Vertex);
+    std::cout << "Uploading vertex data: " << all_vertices.size() << " vertices, " << vertex_data_size << " bytes" << std::endl;
+
+    glBufferData(GL_ARRAY_BUFFER, vertex_data_size, all_vertices.data(), GL_STATIC_DRAW);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error uploading vertex data: " + std::to_string(error));
+    }
+
+    // Setup vertex attributes
+    // Position attribute (location 0)
+    glEnableVertexAttribArray(0);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error enabling vertex attribute 0: " + std::to_string(error));
+    }
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, px));
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error setting vertex attribute 0 pointer: " + std::to_string(error));
+    }
+
+    // Normal attribute (location 1)
+    glEnableVertexAttribArray(1);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error enabling vertex attribute 1: " + std::to_string(error));
+    }
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, nx));
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error setting vertex attribute 1 pointer: " + std::to_string(error));
+    }
+
+    // UV attribute (location 2)
+    glEnableVertexAttribArray(2);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error enabling vertex attribute 2: " + std::to_string(error));
+    }
+
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, u));
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error setting vertex attribute 2 pointer: " + std::to_string(error));
+    }
+
+    // Upload index data
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ebo);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error binding EBO: " + std::to_string(error));
+    }
+
+    size_t index_data_size = all_indices.size() * sizeof(uint32_t);
+    std::cout << "Uploading index data: " << all_indices.size() << " indices, " << index_data_size << " bytes" << std::endl;
+
+    // Validate indices before uploading
+    uint32_t max_index = 0;
+    for (const auto &idx : all_indices)
+    {
+        if (idx >= all_vertices.size())
+        {
+            cgltf_free(data);
+            throw std::runtime_error("Invalid index found: " + std::to_string(idx) + " >= " + std::to_string(all_vertices.size()));
+        }
+        max_index = std::max(max_index, idx);
+    }
+    std::cout << "Index validation passed. Max index: " << max_index << " (vertex count: " << all_vertices.size() << ")" << std::endl;
+
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, index_data_size, all_indices.data(), GL_STATIC_DRAW);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error uploading index data: " + std::to_string(error));
+    }
+
+    // Unbind VAO
+    glBindVertexArray(0);
+    error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        cgltf_free(data);
+        throw std::runtime_error("OpenGL error unbinding VAO: " + std::to_string(error));
+    }
+
+    // Store material and texture data in the mesh
+    mesh.texture_id = texture_id;
+    mesh.has_texture = has_texture;
+    mesh.base_color[0] = base_color[0];
+    mesh.base_color[1] = base_color[1];
+    mesh.base_color[2] = base_color[2];
+    mesh.base_color[3] = base_color[3];
+    mesh.metallic_factor = metallic_factor;
+    mesh.roughness_factor = roughness_factor;
+
+    std::cout << "Stored in mesh - Texture ID: " << mesh.texture_id
+              << ", Has texture: " << mesh.has_texture
+              << ", Base color: (" << mesh.base_color[0] << ", " << mesh.base_color[1]
+              << ", " << mesh.base_color[2] << ", " << mesh.base_color[3] << ")" << std::endl;
+
+    cgltf_free(data);
+    std::cout << "Successfully loaded GLB mesh with " << all_vertices.size() << " vertices and " << all_indices.size() << " indices" << std::endl;
+
+    return mesh;
+}
+
+void modelUpload::renderGLBMesh(const PlyMesh &mesh,
+                                GLuint shader_program,
+                                const glm::mat4 &view_matrix,
+                                const glm::mat4 &projection_matrix,
+                                std::mutex &tf_mutex,
+                                const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms)
+{
+    // Get model transform
+    Eigen::Isometry3f model = Eigen::Isometry3f::Identity();
+    {
+        std::lock_guard<std::mutex> lk(tf_mutex);
+        auto it = frame_transforms.find(mesh.frame_id);
+        if (it != frame_transforms.end())
+            model = it->second;
+    }
+
+    // Use the GLB shader
+    glUseProgram(shader_program);
+
+    // Set uniforms with correct names
+    GLint model_loc = glGetUniformLocation(shader_program, "model_matrix");
+    GLint view_loc = glGetUniformLocation(shader_program, "view_matrix");
+    GLint proj_loc = glGetUniformLocation(shader_program, "projection_matrix");
+    GLint base_color_loc = glGetUniformLocation(shader_program, "base_color");
+    GLint has_texture_loc = glGetUniformLocation(shader_program, "has_texture");
+    GLint texture_loc = glGetUniformLocation(shader_program, "base_color_texture");
+    GLint metallic_loc = glGetUniformLocation(shader_program, "metallic_factor");
+    GLint roughness_loc = glGetUniformLocation(shader_program, "roughness_factor");
+
+    if (model_loc != -1)
+    {
+        glUniformMatrix4fv(model_loc, 1, GL_FALSE, model.matrix().data());
+    }
+    if (view_loc != -1)
+    {
+        glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(view_matrix));
+    }
+    if (proj_loc != -1)
+    {
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(projection_matrix));
+    }
+    if (base_color_loc != -1)
+    {
+        glUniform4fv(base_color_loc, 1, mesh.base_color);
+    }
+    if (has_texture_loc != -1)
+    {
+        glUniform1i(has_texture_loc, mesh.has_texture ? 1 : 0);
+    }
+    if (metallic_loc != -1)
+    {
+        glUniform1f(metallic_loc, mesh.metallic_factor);
+    }
+    if (roughness_loc != -1)
+    {
+        glUniform1f(roughness_loc, mesh.roughness_factor);
+    }
+
+    // Bind texture if available
+    if (mesh.has_texture && mesh.texture_id != 0)
+    {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, mesh.texture_id);
+        if (texture_loc != -1)
+        {
+            glUniform1i(texture_loc, 0); // Texture unit 0
+        }
+    }
+
+    // Render the mesh
+    glBindVertexArray(mesh.vao);
+    glDrawElements(GL_TRIANGLES, GLsizei(mesh.index_count), GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+
+    // Unbind texture
+    if (mesh.has_texture && mesh.texture_id != 0)
+    {
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    glUseProgram(0);
+}
+
+// ====================================
+// ply mesh loading & rendering
+// ====================================
 void modelUpload::renderMesh(const PlyMesh &mesh,
                              glk::GLSLShader &shader,
                              std::mutex &tf_mutex,
