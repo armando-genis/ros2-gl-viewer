@@ -641,89 +641,22 @@ public:
 
         ImGui::Separator();
 
-        static bool show_load_input = false;
-        static char filepath[256] = "";
-        static int selected_ply_frame = 0;
-
-        if (ImGui::Button("Load PLY"))
-        {
-            show_load_input = !show_load_input;
-        }
-
-        // /workspace/models/Buggy.gdl
-        // /workspace/models/miniBuggy.ply
-        // /workspace/models/miniBuggy_2.ply
         // /workspace/models/sdv.ply
-
-        if (show_load_input)
-        {
-            ImGui::InputText("PLY File", filepath, sizeof(filepath));
-            ImGui::Separator();
-            ImGui::Text("Assign to TF frame:");
-            ImGui::SameLine();
-            if (!available_frames_.empty())
-            {
-                const char *preview = available_frames_[selected_ply_frame].c_str();
-                if (ImGui::BeginCombo("##ply_frames", preview))
-                {
-                    for (int n = 0; n < (int)available_frames_.size(); ++n)
-                    {
-                        bool is_selected = (selected_ply_frame == n);
-                        if (ImGui::Selectable(available_frames_[n].c_str(), is_selected))
-                        {
-                            selected_ply_frame = n;
-                        }
-                        if (is_selected)
-                            ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
-            }
-            else
-            {
-                ImGui::TextDisabled("No TF frames");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Open"))
-            {
-                try
-                {
-                    loaded_mesh_robot = model_upload_.loadModel(filepath);
-                    mesh_loaded_robot = true;
-                    const std::string &frame_id = available_frames_[selected_ply_frame];
-
-                    std::cout << green
-                              << "Loaded PLY mesh from: "
-                              << filepath
-                              << " into frame: "
-                              << frame_id
-                              << reset
-                              << std::endl;
-
-                    loaded_mesh_robot.frame_id = frame_id;
-                }
-                catch (const std::exception &e)
-                {
-                    std::cerr << "PLY load error: " << e.what() << std::endl;
-                }
-                show_load_input = false; // hide input after loading
-            }
-        }
 
         // /workspace/models/drift.glb
         // /workspace/models/buggy.glb
         // /workspace/models/formula_uno_car.glb
 
-        static bool show_load_input_glb = false;
+        static bool show_load_input_robot = false;
         static char filepath_glb[256] = "";
-        static int selected_glb_frame = 0;
+        static int selected_robot_frame = 0;
 
-        if (ImGui::Button("Load GLB"))
-            show_load_input_glb = !show_load_input_glb;
+        if (ImGui::Button("Load robot mesh"))
+            show_load_input_robot = !show_load_input_robot;
 
-        if (show_load_input_glb)
+        if (show_load_input_robot)
         {
-            ImGui::InputText("GLB File", filepath_glb, sizeof(filepath_glb));
+            ImGui::InputText("model File", filepath_glb, sizeof(filepath_glb));
             ImGui::Separator();
             ImGui::Text("Assign to TF frame:");
             ImGui::SameLine();
@@ -731,18 +664,18 @@ public:
             bool has = !available_frames_.empty();
             // preview what would be loaded (or show “map”)
             const char *preview = has
-                                      ? available_frames_[selected_glb_frame].c_str()
+                                      ? available_frames_[selected_robot_frame].c_str()
                                       : "(map)";
 
             if (has)
             {
-                if (ImGui::BeginCombo("##glb_frames", preview))
+                if (ImGui::BeginCombo("##robot_frames", preview))
                 {
                     for (int i = 0; i < (int)available_frames_.size(); ++i)
                     {
-                        bool sel = (selected_glb_frame == i);
+                        bool sel = (selected_robot_frame == i);
                         if (ImGui::Selectable(available_frames_[i].c_str(), sel))
-                            selected_glb_frame = i;
+                            selected_robot_frame = i;
                         if (sel)
                             ImGui::SetItemDefaultFocus();
                     }
@@ -759,36 +692,38 @@ public:
             {
                 try
                 {
+
+                    if (mesh_glb_loaded)
+                    {
+                        glBindVertexArray(0); // ✅ Unbind any currently bound VAO
+                        glUseProgram(0);      // ✅ Unbind any shader program
+                        model_upload_.cleanupMesh(loaded_mesh_glb);
+                        mesh_glb_loaded = false;
+                    }
+
                     // 1) load the mesh
                     loaded_mesh_glb = model_upload_.loadModel(filepath_glb);
                     mesh_glb_loaded = true;
 
                     // 2) pick the frame based on your index (or "map" if none)
                     const std::string frame_id = has
-                                                     ? available_frames_[selected_glb_frame]
+                                                     ? available_frames_[selected_robot_frame]
                                                      : "map";
                     loaded_mesh_glb.frame_id = frame_id;
 
                     // 3) log
                     std::cout << green
-                              << "Loaded GLB mesh from: " << filepath_glb
-                              << " into frame: " << frame_id
+                              << "Loaded robot mesh from: " << filepath_glb
+                              << " into frame: " << frame_id << " with type: " << loaded_mesh_glb.type
                               << reset << std::endl;
                 }
                 catch (const std::exception &e)
                 {
                     std::cerr << "GLB load error: " << e.what() << std::endl;
                 }
-                show_load_input_glb = false;
+                show_load_input_robot = false;
             }
         }
-
-        // glb UPLOUD
-
-        // ImGui::Separator();
-
-        // ImGui::SliderFloat("ROS Topic Point Size", &topic_point_size_, 1.0f, 20.0f);
-        // ImGui::SliderFloat("PCD Point Size", &pcd_point_size_, 1.0f, 20.0f);
 
         ImGui::End();
     }
@@ -835,18 +770,11 @@ public:
         shader.use();
         shader.set_uniform("view_matrix", view);
         shader.set_uniform("projection_matrix", proj);
+        model_upload_.setMatrices(view, proj);
 
-        // 5) draw axes
-        // {
-        //     Eigen::Matrix4f m = Eigen::Matrix4f::Identity() * 2.0f;
-        //     shader.set_uniform("color_mode", 2);
-        //     shader.set_uniform("model_matrix", m);
-        //     const auto &coord = glk::Primitives::instance()
-        //                             ->primitive(glk::Primitives::COORDINATE_SYSTEM);
-        //     coord.draw(shader);
-        // }
-
-        // 6) draw grid
+        // ============================================
+        // render grid
+        // ============================================
         {
             Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
             T.pretranslate(Eigen::Vector3f(0, 0, -0.02f));
@@ -856,7 +784,9 @@ public:
             grid_->draw(shader);
         }
 
-        // 7) draw TF frames if desired
+        // ============================================
+        // render coordinate frames
+        // ============================================
 
         if (show_tf_frames_)
         {
@@ -891,7 +821,9 @@ public:
             }
         }
 
-        // 8) now always draw your point clouds in white
+        // ============================================
+        // render point clouds ros2 topics
+        // ============================================
         {
             std::lock_guard lk(cloud_topics_mutex_);
             // set uniform color-mode to “flat color”
@@ -968,93 +900,39 @@ public:
                 glBindVertexArray(0);
             }
         }
-
+        // ============================================
+        // render PCD point cloud
+        // ============================================
         if (pcd_loader_.isLoaded() || pcd_loader_.getPointCount() != 0)
         {
             pcd_loader_.renderpcl(shader, tf_mutex_, frame_transforms_);
         }
-
-        if (mesh_loaded_robot)
-        {
-            model_upload_.renderMesh(loaded_mesh_robot, shader, tf_mutex_, frame_transforms_);
-        }
-
+        // ============================================
+        // render meshes
+        // ============================================
         if (mesh_map_loaded)
         {
             model_upload_.renderMesh(loaded_mesh_map, shader, tf_mutex_, frame_transforms_);
         }
 
-        if (mesh_glb_loaded)
+        if (mesh_glb_loaded && loaded_mesh_glb.type == 0) // 0 = GLB type
         {
-            // Convert Eigen matrices to GLM for the GLB shader
-            glm::mat4 glm_view = glm::mat4(1.0f);
-            glm::mat4 glm_proj = glm::mat4(1.0f);
-
-            // Copy Eigen view matrix to GLM (column-major)
-            for (int i = 0; i < 4; ++i)
-            {
-                for (int j = 0; j < 4; ++j)
-                {
-                    glm_view[i][j] = view(j, i); // Note: transposed for column-major
-                    glm_proj[i][j] = proj(j, i); // Note: transposed for column-major
-                }
-            }
-
-            model_upload_.renderGLBMesh(loaded_mesh_glb, glb_shader_program_,
-                                        glm_view, glm_proj, tf_mutex_, frame_transforms_);
+            model_upload_.renderGLBMesh(loaded_mesh_glb, glb_shader_program_, tf_mutex_, frame_transforms_);
         }
 
+        if (mesh_glb_loaded && loaded_mesh_glb.type == 1) // 1 = GLTF type
+        {
+            model_upload_.renderMesh(loaded_mesh_glb, shader, tf_mutex_, frame_transforms_);
+        }
+        // ============================================
+        // render lanelet2 map
+        // ============================================
         if (lanelet_loader_.isLoaded())
         {
             lanelet_loader_.mapLines(shader);
             lanelet_loader_.crosswalks(shader);
             lanelet_loader_.stripes(shader);
         }
-
-        // 10) blinking red light with 2 s OFF, 4 s ON
-        {
-            // 1) compute elapsed time
-            auto now = std::chrono::steady_clock::now();
-            float t = std::chrono::duration<float>(now - blink_start_).count();
-
-            // 2) new blink logic
-            constexpr float offTime = 0.5f;            // first 2 s = OFF
-            constexpr float onTime = 2.5f;             // next 4 s = ON
-            constexpr float period = offTime + onTime; // total = 6 s
-            float phase = std::fmod(t, period);
-
-            bool lightOn = (phase >= offTime); // off for [0,2), on for [2,6)
-
-            if (lightOn)
-            {
-                shader.set_uniform("color_mode", 1);
-                shader.set_uniform("material_color", Eigen::Vector4f(0.92f, 0.29f, 0.286f, 1));
-
-                const std::array<const char *, 2> frames = {"light_1", "light_2"};
-                for (auto frame_name : frames)
-                {
-                    Eigen::Affine3f M = Eigen::Affine3f::Identity();
-                    {
-                        std::lock_guard<std::mutex> lk(tf_mutex_);
-                        auto it = frame_transforms_.find(frame_name);
-                        if (it != frame_transforms_.end())
-                            M = it->second;
-                    }
-
-                    // no vertical offset here; it's at the frame origin
-                    M.scale(Eigen::Vector3f(0.1f, 0.2f, 0.1f));
-                    shader.set_uniform("model_matrix", M.matrix());
-
-                    const auto &sq = glk::Primitives::instance()->primitive(glk::Primitives::CUBE);
-                    sq.draw(shader);
-                }
-            }
-        }
-
-        // {
-
-        //     addWorldText("base_link", Eigen::Vector3f(0.0f, 0.0f, 0.0f), Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.05f); // Very small text
-        // }
 
         // render text
         text_renderer_.renderWorldText(view, proj);
@@ -1527,10 +1405,6 @@ private:
     GLuint dbgVao = 0;
     GLuint dbgVbo = 0;
 
-    // PointCloudTopic and pcd size
-    float topic_point_size_ = 4.0f;
-    float pcd_point_size_ = 10.0f;
-
     // lights
     std::chrono::steady_clock::time_point blink_start_ = std::chrono::steady_clock::now();
 
@@ -1544,13 +1418,9 @@ private:
     // lanelet2 loader
     LaneletLoader lanelet_loader_;
 
-    // for ply model upload
+    // for ply and glb model upload
     modelUpload model_upload_;
     GLuint glb_shader_program_ = 0;
-
-    // mesh ply variables
-    PlyMesh loaded_mesh_robot;
-    bool mesh_loaded_robot = false;
 
     // mesh map variables
     PlyMesh loaded_mesh_map;

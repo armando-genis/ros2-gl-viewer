@@ -17,6 +17,91 @@ modelUpload::~modelUpload()
 {
 }
 
+void modelUpload::cleanupMesh(PlyMesh &mesh)
+{
+    std::cout << "Cleaning up mesh - VAO: " << mesh.vao
+              << ", VBO: " << mesh.vbo
+              << ", EBO: " << mesh.ebo
+              << ", Texture: " << mesh.texture_id << std::endl;
+
+    // Clear any existing errors first
+    while (glGetError() != GL_NO_ERROR)
+    { /* Clear error queue */
+    }
+
+    // Delete VAO
+    if (mesh.vao != 0)
+    {
+        glDeleteVertexArrays(1, &mesh.vao);
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR)
+        {
+            std::cout << "Error deleting VAO " << mesh.vao << ": " << error << std::endl;
+        }
+        mesh.vao = 0;
+    }
+
+    // Delete VBO
+    if (mesh.vbo != 0)
+    {
+        glDeleteBuffers(1, &mesh.vbo);
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR)
+        {
+            std::cout << "Error deleting VBO " << mesh.vbo << ": " << error << std::endl;
+        }
+        mesh.vbo = 0;
+    }
+
+    // Delete EBO
+    if (mesh.ebo != 0)
+    {
+        glDeleteBuffers(1, &mesh.ebo);
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR)
+        {
+            std::cout << "Error deleting EBO " << mesh.ebo << ": " << error << std::endl;
+        }
+        mesh.ebo = 0;
+    }
+
+    // Delete texture
+    if (mesh.texture_id != 0)
+    {
+        GLboolean is_texture = glIsTexture(mesh.texture_id);
+        if (is_texture)
+        {
+            glDeleteTextures(1, &mesh.texture_id);
+            GLenum error = glGetError();
+            if (error != GL_NO_ERROR)
+            {
+                std::cout << "Error deleting texture " << mesh.texture_id << ": " << error << std::endl;
+            }
+            else
+            {
+                std::cout << "Deleted texture ID: " << mesh.texture_id << std::endl;
+            }
+        }
+        else
+        {
+            std::cout << "Warning: Texture ID " << mesh.texture_id << " is not valid" << std::endl;
+        }
+        mesh.texture_id = 0;
+    }
+
+    // Reset other properties...
+    mesh.vertex_count = 0;
+    mesh.index_count = 0;
+    mesh.has_texture = false;
+    mesh.base_color[0] = mesh.base_color[1] = mesh.base_color[2] = mesh.base_color[3] = 1.0f;
+    mesh.metallic_factor = 0.0f;
+    mesh.roughness_factor = 1.0f;
+    mesh.frame_id = "map";
+    mesh.type = -1;
+
+    std::cout << "Mesh cleanup completed" << std::endl;
+}
+
 bool modelUpload::createGLBShader(GLuint &shader_program)
 {
     const char *vertex_shader_source = R"(
@@ -787,13 +872,27 @@ PlyMesh modelUpload::loadGlb(const std::string &path)
     cgltf_free(data);
     std::cout << "Successfully loaded GLB mesh with " << all_vertices.size() << " vertices and " << all_indices.size() << " indices" << std::endl;
 
+    // set type
+    mesh.type = 0;
+
     return mesh;
+}
+
+void modelUpload::setMatrices(const Eigen::Matrix4f &view_matrix, const Eigen::Matrix4f &projection_matrix)
+{
+    // Convert Eigen to GLM (column-major)
+    for (int i = 0; i < 4; ++i)
+    {
+        for (int j = 0; j < 4; ++j)
+        {
+            current_view_matrix[i][j] = view_matrix(j, i);
+            current_projection_matrix[i][j] = projection_matrix(j, i);
+        }
+    }
 }
 
 void modelUpload::renderGLBMesh(const PlyMesh &mesh,
                                 GLuint shader_program,
-                                const glm::mat4 &view_matrix,
-                                const glm::mat4 &projection_matrix,
                                 std::mutex &tf_mutex,
                                 const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms)
 {
@@ -811,9 +910,9 @@ void modelUpload::renderGLBMesh(const PlyMesh &mesh,
 
     // Set uniforms with correct names
     GLint model_loc = glGetUniformLocation(shader_program, "model_matrix");
+    GLint base_color_loc = glGetUniformLocation(shader_program, "base_color");
     GLint view_loc = glGetUniformLocation(shader_program, "view_matrix");
     GLint proj_loc = glGetUniformLocation(shader_program, "projection_matrix");
-    GLint base_color_loc = glGetUniformLocation(shader_program, "base_color");
     GLint has_texture_loc = glGetUniformLocation(shader_program, "has_texture");
     GLint texture_loc = glGetUniformLocation(shader_program, "base_color_texture");
     GLint metallic_loc = glGetUniformLocation(shader_program, "metallic_factor");
@@ -825,11 +924,11 @@ void modelUpload::renderGLBMesh(const PlyMesh &mesh,
     }
     if (view_loc != -1)
     {
-        glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(view_matrix));
+        glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(current_view_matrix));
     }
     if (proj_loc != -1)
     {
-        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(projection_matrix));
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, glm::value_ptr(current_projection_matrix));
     }
     if (base_color_loc != -1)
     {
@@ -1071,5 +1170,7 @@ PlyMesh modelUpload::loadPlyBinaryLE(const std::string &path)
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint32_t), indices.data(), GL_STATIC_DRAW);
 
     glBindVertexArray(0);
+
+    mesh.type = 1; // Set type to indicate this is a PLY mesh
     return mesh;
 }

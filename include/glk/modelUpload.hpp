@@ -28,6 +28,7 @@ struct cgltf_image;
 
 struct PlyMesh
 {
+    int type = -1; // 0 for GLB, 1 for PLY and -1 for error
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint ebo = 0; // Element buffer object
@@ -35,7 +36,7 @@ struct PlyMesh
     size_t index_count = 0;       // Total number of indices
     std::string frame_id = "map"; // Default frame ID
 
-    // Texture support
+    // Texture supports
     GLuint texture_id = 0;    // OpenGL texture ID
     bool has_texture = false; // Whether this mesh has a texture
 
@@ -57,6 +58,10 @@ private:
     // Helper function to load texture from cgltf image
     GLuint loadTextureFromImage(const cgltf_image *image, const cgltf_data *data);
 
+    // Store current view and projection matrices
+    glm::mat4 current_view_matrix = glm::mat4(1.0f);
+    glm::mat4 current_projection_matrix = glm::mat4(1.0f);
+
 public:
     modelUpload(/* args */);
     ~modelUpload();
@@ -71,8 +76,10 @@ public:
 
     void renderGLBMesh(const PlyMesh &mesh,
                        GLuint shader_program,
-                       const glm::mat4 &view_matrix,
-                       const glm::mat4 &projection_matrix,
                        std::mutex &tf_mutex,
                        const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms);
+
+    static void cleanupMesh(PlyMesh &mesh);
+
+    void setMatrices(const Eigen::Matrix4f &view_matrix, const Eigen::Matrix4f &projection_matrix);
 };
