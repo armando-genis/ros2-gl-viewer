@@ -384,6 +384,12 @@ PlyMesh modelUpload::loadGlb(const std::string &path)
 {
     std::cout << "Attempting to load GLB file: " << path << std::endl;
 
+    // ✅ Clear any existing OpenGL errors at the start
+    while (glGetError() != GL_NO_ERROR)
+    {
+        std::cout << "Clearing pre-existing OpenGL error" << std::endl;
+    }
+
     // Check if file exists using filesystem
     if (!std::filesystem::exists(path))
     {

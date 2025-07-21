@@ -78,6 +78,7 @@ set(GLK_SOURCES
   src/glk/PclLoader.cpp
   src/glk/modelUpload.cpp
   src/glk/LaneletLoader.cpp
+  # src/glk/ThickLines.cpp
 )
 
 # List all source files in guik directory

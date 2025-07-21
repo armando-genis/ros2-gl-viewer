@@ -53,10 +53,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
-
-#include <ft2build.h>
-#include FT_FREETYPE_H
-#include <map>
+#include <regex>
 
 static Eigen::Isometry3f toEigen(const geometry_msgs::msg::Transform &t)
 {
@@ -94,9 +91,11 @@ public:
     {
         std::cout << "Basic Viewer Application initialized" << std::endl;
         // Initialize TF2
-        tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock(), tf2::durationFromSec(10.0));
+        // tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock(), tf2::durationFromSec(10.0));
 
-        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+        // tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+        tf_initialized_ = false;
 
         // Start ROS2 spinning thread
         last_topic_refresh_ = std::chrono::steady_clock::now() - topic_refresh_interval_ * 2;
@@ -324,6 +323,19 @@ public:
         // get the tf based on the frame
         update_tf_transforms();
 
+        // Topic hz
+        updateTopicFrequencies(now);
+        // Check if we need to refresh
+        if (now - last_topic_refresh_ > topic_refresh_interval_)
+        {
+            refresh_topic_list();
+        }
+
+        if (now - last_frame_refresh_ > frame_refresh_interval_)
+        {
+            refresh_frame_list();
+        }
+
         // Show main canvas settings
         main_canvas_->draw_ui();
 
@@ -346,9 +358,16 @@ public:
 
         // FPS counter
         ImGui::Separator();
-        ImGui::Text("Swipe/drag pad: orbit");
-        ImGui::Text("Scroll pad: zoom");
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+
+        // ✅ ADD: Memory monitoring
+        static int frame_count = 0;
+        frame_count++;
+        if (frame_count % 60 == 0)
+        { // Check every ~1 second at 60fps
+            checkMemoryUsage();
+        }
+        ImGui::Text("Memory: %zu MB", last_memory_check_);
 
         ImGui::Separator();
         if (ImGui::Button("Reset TF Buffer"))
@@ -372,10 +391,6 @@ public:
         // Show frames window if enabled
         if (show_frames_window)
         {
-            if (now - last_frame_refresh_ > frame_refresh_interval_)
-            {
-                refresh_frame_list();
-            }
             // Display frames and allow selection
             ImGui::Text("Available Frames:");
             ImGui::Separator();
@@ -406,13 +421,6 @@ public:
         // Show topics window if enabled
         if (show_topics_window)
         {
-            // Topic hz
-            updateTopicFrequencies(now);
-            // Check if we need to refresh
-            if (now - last_topic_refresh_ > topic_refresh_interval_)
-            {
-                refresh_topic_list();
-            }
             // Display topics - just the names
             ImGui::Text("Available ROS2 Topics:");
             ImGui::Separator();
@@ -645,7 +653,7 @@ public:
 
         // /workspace/models/drift.glb
         // /workspace/models/buggy.glb
-        // /workspace/models/formula_uno_car.glb
+        // /workspace/models/formula_uno_car_rot.glb
 
         static bool show_load_input_robot = false;
         static char filepath_glb[256] = "";
@@ -797,7 +805,7 @@ public:
             const auto &cube = glk::Primitives::instance()->primitive(glk::Primitives::CUBE);
 
             float axis_length = tf_frame_size_;
-            float axis_thickness = 0.05f;
+            float axis_thickness = 0.03f;
 
             // First, draw the fixed frame at origin (identity transform)
             if (!fixed_frame_.empty())
@@ -821,6 +829,11 @@ public:
             }
         }
 
+        // ✅ IMPORTANT: Rebind main shader before point clouds
+        shader.use();
+        shader.set_uniform("view_matrix", view);
+        shader.set_uniform("projection_matrix", proj);
+
         // ============================================
         // render point clouds ros2 topics
         // ============================================
@@ -830,7 +843,7 @@ public:
             shader.set_uniform("color_mode", 0);
 
             shader.set_uniform("point_scale", 0.0f); // NO fall-off
-            shader.set_uniform("point_size", topic_point_size_);
+
             // 1) One-time VAO+VBO creation
             if (dbgVao == 0)
             {
@@ -942,6 +955,25 @@ public:
         main_canvas_->render_to_screen();
     }
 
+    void checkMemoryUsage()
+    {
+        // Linux memory check
+        std::ifstream status("/proc/self/status");
+        std::string line;
+        while (std::getline(status, line))
+        {
+            if (line.substr(0, 6) == "VmRSS:")
+            {
+                // Extract memory value
+                std::istringstream iss(line);
+                std::string label, value, unit;
+                iss >> label >> value >> unit;
+                last_memory_check_ = std::stoul(value) / 1024; // Convert to MB
+                break;
+            }
+        }
+    }
+
     void drawThickCoordinateFrame(glk::GLSLShader &shader, const glk::Drawable &cube,
                                   const Eigen::Isometry3f &transform, float length, float thickness)
     {
@@ -976,6 +1008,20 @@ public:
             shader.set_uniform("model_matrix", z_transform.matrix());
             shader.set_uniform("material_color", Eigen::Vector4f(0.0f, 0.0f, 1.0f, 1.0f)); // Blue
             cube.draw(shader);
+        }
+    }
+
+    void ensureTFInitialized()
+    {
+        if (!tf_initialized_)
+        {
+            std::cout << "🔧 Lazy initializing TF2..." << std::endl;
+            tf_buffer_ = std::make_shared<tf2_ros::Buffer>(
+                node_->get_clock(),
+                tf2::durationFromSec(10.0));
+            tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+            tf_initialized_ = true;
+            std::cout << "✅ TF2 initialized" << std::endl;
         }
     }
 
@@ -1088,6 +1134,9 @@ public:
     {
         std::lock_guard<std::mutex> lock(topics_mutex_);
 
+        if (topic_message_times_.empty())
+            return; // No topics to update
+
         for (auto &[topic_name, times] : topic_message_times_)
         {
             // Remove old messages (older than 2 seconds)
@@ -1121,7 +1170,10 @@ public:
     // - https://wiki.ros.org/tf/TfUsingPython
     void refresh_frame_list()
     {
-        std::lock_guard<std::mutex> lock(frames_mutex_);
+        ensureTFInitialized();
+
+        std::lock_guard<std::mutex>
+            lock(frames_mutex_);
 
         // Get all frames from TF2
         std::string all_frames;
@@ -1200,6 +1252,8 @@ public:
 
     void update_tf_transforms()
     {
+        ensureTFInitialized();
+
         std::lock_guard<std::mutex> lock(tf_mutex_);
         // Skip if no fixed frame selected
         if (fixed_frame_.empty())
@@ -1240,6 +1294,8 @@ public:
 
         // Clear current transforms
         frame_transforms_.clear();
+
+        tf_initialized_ = false;
 
         // Reset TF listener and buffer
         tf_listener_.reset();
@@ -1351,6 +1407,12 @@ private:
 
     // Camara control
     guik::ArcCameraControl camera_control_;
+
+    // control variables for memory, GPU utilization and tf buffer
+    size_t last_memory_check_ = 0;
+    bool tf_initialized_ = false;
+    size_t last_gpu_memory_check_ = 0;
+    float last_gpu_utilization_ = 0.0f;
 
     // ros2 node
     std::shared_ptr<rclcpp::Node> node_;
