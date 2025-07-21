@@ -654,6 +654,7 @@ public:
         // /workspace/models/drift.glb
         // /workspace/models/buggy.glb
         // /workspace/models/formula_uno_car_rot.glb
+        // /workspace/models/formula_uno_car.glb
 
         static bool show_load_input_robot = false;
         static char filepath_glb[256] = "";

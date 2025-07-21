@@ -465,6 +465,26 @@ PlyMesh modelUpload::loadGlb(const std::string &path)
 
     std::cout << "Found " << data->meshes_count << " mesh(es)" << std::endl;
 
+    //  Extract node transforms
+    Eigen::Matrix4f accumulated_transform = Eigen::Matrix4f::Identity();
+
+    // Process scene nodes to get transforms
+    if (data->scenes_count > 0)
+    {
+        const cgltf_scene *scene = &data->scenes[0]; // Use first scene
+        std::cout << "Processing " << scene->nodes_count << " root nodes for transforms" << std::endl;
+
+        for (size_t i = 0; i < scene->nodes_count; ++i)
+        {
+            const cgltf_node *node = scene->nodes[i];
+            Eigen::Matrix4f node_transform = extractNodeTransform(node);
+            accumulated_transform = accumulated_transform * node_transform;
+            std::cout << "Applied transform from node " << i << std::endl;
+        }
+    }
+
+    std::cout << "Final accumulated transform extracted" << std::endl;
+
     // Define Vertex structure first
     struct Vertex
     {
@@ -869,6 +889,8 @@ PlyMesh modelUpload::loadGlb(const std::string &path)
     mesh.base_color[3] = base_color[3];
     mesh.metallic_factor = metallic_factor;
     mesh.roughness_factor = roughness_factor;
+    mesh.local_transform = accumulated_transform;
+    mesh.type = 0;
 
     std::cout << "Stored in mesh - Texture ID: " << mesh.texture_id
               << ", Has texture: " << mesh.has_texture
@@ -878,10 +900,80 @@ PlyMesh modelUpload::loadGlb(const std::string &path)
     cgltf_free(data);
     std::cout << "Successfully loaded GLB mesh with " << all_vertices.size() << " vertices and " << all_indices.size() << " indices" << std::endl;
 
-    // set type
-    mesh.type = 0;
-
     return mesh;
+}
+
+Eigen::Matrix4f modelUpload::extractNodeTransform(const cgltf_node *node)
+{
+    Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
+
+    if (node->has_matrix)
+    {
+        // Node has a direct 4x4 matrix
+        // cgltf matrices are column-major, same as Eigen
+        std::cout << "Node has direct matrix transform" << std::endl;
+        for (int col = 0; col < 4; ++col)
+        {
+            for (int row = 0; row < 4; ++row)
+            {
+                transform(row, col) = node->matrix[col * 4 + row];
+            }
+        }
+    }
+    else
+    {
+        // Node has separate translation, rotation, scale
+        Eigen::Vector3f translation(0, 0, 0);
+        Eigen::Quaternionf rotation(1, 0, 0, 0); // w, x, y, z
+        Eigen::Vector3f scale(1, 1, 1);
+
+        if (node->has_translation)
+        {
+            translation = Eigen::Vector3f(
+                node->translation[0],
+                node->translation[1],
+                node->translation[2]);
+            std::cout << "Node translation: (" << translation.x() << ", " << translation.y() << ", " << translation.z() << ")" << std::endl;
+        }
+
+        if (node->has_rotation)
+        {
+            rotation = Eigen::Quaternionf(
+                node->rotation[3], // w
+                node->rotation[0], // x
+                node->rotation[1], // y
+                node->rotation[2]  // z
+            );
+            std::cout << "Node rotation: (" << rotation.w() << ", " << rotation.x() << ", " << rotation.y() << ", " << rotation.z() << ")" << std::endl;
+        }
+
+        if (node->has_scale)
+        {
+            scale = Eigen::Vector3f(
+                node->scale[0],
+                node->scale[1],
+                node->scale[2]);
+            std::cout << "Node scale: (" << scale.x() << ", " << scale.y() << ", " << scale.z() << ")" << std::endl;
+        }
+
+        // Build transform matrix: T * R * S
+        Eigen::Affine3f affine = Eigen::Affine3f::Identity();
+        affine.translate(translation);
+        affine.rotate(rotation);
+        affine.scale(scale);
+
+        transform = affine.matrix();
+    }
+
+    // Process child nodes recursively if needed
+    for (size_t i = 0; i < node->children_count; ++i)
+    {
+        std::cout << "Processing child node " << i << std::endl;
+        Eigen::Matrix4f child_transform = extractNodeTransform(node->children[i]);
+        transform = transform * child_transform;
+    }
+
+    return transform;
 }
 
 void modelUpload::setMatrices(const Eigen::Matrix4f &view_matrix, const Eigen::Matrix4f &projection_matrix)
@@ -903,13 +995,15 @@ void modelUpload::renderGLBMesh(const PlyMesh &mesh,
                                 const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms)
 {
     // Get model transform
-    Eigen::Isometry3f model = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f tf_transform = Eigen::Isometry3f::Identity();
     {
         std::lock_guard<std::mutex> lk(tf_mutex);
         auto it = frame_transforms.find(mesh.frame_id);
         if (it != frame_transforms.end())
-            model = it->second;
+            tf_transform = it->second;
     }
+
+    Eigen::Matrix4f final_model_matrix = tf_transform.matrix() * mesh.local_transform;
 
     // Use the GLB shader
     glUseProgram(shader_program);
@@ -926,7 +1020,7 @@ void modelUpload::renderGLBMesh(const PlyMesh &mesh,
 
     if (model_loc != -1)
     {
-        glUniformMatrix4fv(model_loc, 1, GL_FALSE, model.matrix().data());
+        glUniformMatrix4fv(model_loc, 1, GL_FALSE, final_model_matrix.data());
     }
     if (view_loc != -1)
     {

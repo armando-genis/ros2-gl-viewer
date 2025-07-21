@@ -25,6 +25,7 @@
 struct cgltf_data;
 struct cgltf_options;
 struct cgltf_image;
+struct cgltf_node;
 
 struct PlyMesh
 {
@@ -44,6 +45,8 @@ struct PlyMesh
     float base_color[4] = {1.0f, 1.0f, 1.0f, 1.0f}; // RGBA base color from material
     float metallic_factor = 0.0f;
     float roughness_factor = 1.0f;
+
+    Eigen::Matrix4f local_transform = Eigen::Matrix4f::Identity();
 };
 
 class modelUpload
@@ -57,6 +60,9 @@ private:
 
     // Helper function to load texture from cgltf image
     GLuint loadTextureFromImage(const cgltf_image *image, const cgltf_data *data);
+
+    // Helper function to extract node transform
+    Eigen::Matrix4f extractNodeTransform(const cgltf_node *node);
 
     // Store current view and projection matrices
     glm::mat4 current_view_matrix = glm::mat4(1.0f);
