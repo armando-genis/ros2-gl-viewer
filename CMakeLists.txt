@@ -107,7 +107,7 @@ add_executable(pointcloud_viewer
 # Add compile definitions for the libraries
 target_compile_definitions(pointcloud_viewer PRIVATE
     CGLTF_IMPLEMENTATION
-    STB_IMAGE_IMPLEMENTATION
+    # STB_IMAGE_IMPLEMENTATION
 )
 
 # Link libraries
@@ -138,6 +138,14 @@ add_custom_command(TARGET pointcloud_viewer POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
   ${CMAKE_SOURCE_DIR}/data
   ${CMAKE_BINARY_DIR}/data
+)
+
+# Copy the icon file from src to build directory
+add_custom_command(TARGET pointcloud_viewer POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+  ${CMAKE_SOURCE_DIR}/src/appicon.png
+  ${CMAKE_BINARY_DIR}/appicon.png
+  COMMENT "Copying appicon.png to build directory"
 )
 
 # Install the executable

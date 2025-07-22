@@ -336,6 +336,10 @@ public:
             refresh_frame_list();
         }
 
+        drawMacOSDock();
+        drawTopicsPopup();
+        drawFramesPopup();
+
         // Show main canvas settings
         main_canvas_->draw_ui();
 
@@ -1391,6 +1395,559 @@ public:
         }
     }
 
+    void drawMacOSDock()
+    {
+        ImGuiViewport *viewport = ImGui::GetMainViewport();
+        ImVec2 viewport_size = viewport->Size;
+
+        // Dock dimensions
+        const float dock_height = 80.0f;
+        const float icon_size = 50.0f;
+        const float icon_spacing = 15.0f;
+        const float dock_padding = 15.0f;
+
+        // Performance panel dimensions
+        const float perf_panel_width = 200.0f;
+        const float panel_spacing = 20.0f;
+
+        // Calculate dock width based on number of icons
+        float dock_width = (icon_size * dock_icons_.size()) + (icon_spacing * (dock_icons_.size() - 1)) + (dock_padding * 2);
+
+        // Calculate total width of both dock and performance panel
+        float total_width = dock_width + panel_spacing + perf_panel_width;
+
+        // Position dock so the ENTIRE layout
+        ImVec2 dock_pos = ImVec2(
+            (viewport_size.x - total_width) * 0.5f, // Center the whole thing
+            viewport_size.y - dock_height - 20.0f   // 20px margin from bottom
+        );
+
+        // Set dock window properties
+        ImGui::SetNextWindowPos(dock_pos);
+        ImGui::SetNextWindowSize(ImVec2(dock_width, dock_height));
+
+        // Dock window flags
+        ImGuiWindowFlags dock_flags =
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+        // Custom dock styling
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 25.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dock_padding, dock_padding));
+
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(icon_spacing, 0));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.9f)); // Dark translucent
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+
+        ImGui::Begin("##Dock", nullptr, dock_flags);
+
+        // Draw dock icons horizontally
+        for (size_t i = 0; i < dock_icons_.size(); ++i)
+        {
+            const auto &icon = dock_icons_[i];
+
+            if (i > 0)
+            {
+                ImGui::SameLine();
+            }
+
+            // Highlight selected icon
+            bool is_selected = (current_panel_ == icon.item);
+            if (is_selected)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.4f, 0.6f, 1.0f, 0.8f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.5f, 0.7f, 1.0f, 0.9f));
+            }
+            else
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.6f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+            }
+
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, icon_size * 0.25f);
+
+            // Create button with icon
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Button(icon.icon, ImVec2(icon_size, icon_size)))
+            {
+                current_panel_ = icon.item;
+
+                // Handle different dock items
+                switch (icon.item)
+                {
+                case DockItem::TOPICS:
+                    show_topics_popup_ = !show_topics_popup_;
+                    std::cout << "Toggled ROS2 Topics popup" << std::endl;
+                    break;
+                case DockItem::FRAMES:
+                    show_frames_popup_ = !show_frames_popup_;
+                    std::cout << "Toggled TF Frames popup" << std::endl;
+                    break;
+                case DockItem::FILES:
+                    show_files_popup_ = !show_files_popup_;
+                    std::cout << "Toggled Files popup" << std::endl;
+                    break;
+                case DockItem::MODELS:
+                    show_models_popup_ = !show_models_popup_;
+                    std::cout << "Toggled Models popup" << std::endl;
+                    break;
+                case DockItem::SETTINGS:
+                    show_settings_popup_ = !show_settings_popup_;
+                    std::cout << "Toggled Settings popup" << std::endl;
+                    break;
+                case DockItem::INFO:
+                    show_info_popup_ = !show_info_popup_;
+                    std::cout << "Toggled Info popup" << std::endl;
+                    break;
+                }
+            }
+            ImGui::PopID();
+
+            // Tooltip on hover
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("%s", icon.tooltip);
+            }
+
+            ImGui::PopStyleVar();    // FrameRounding
+            ImGui::PopStyleColor(2); // Button colors
+        }
+
+        ImGui::End();
+        ImGui::PopStyleColor(2); // Window colors
+        ImGui::PopStyleVar(3);
+
+        // Performance info panel positioned relative to the dock
+        ImVec2 info_pos = ImVec2(
+            dock_pos.x + dock_width + panel_spacing, // Use the calculated spacing
+            viewport_size.y - dock_height - 20.0f);
+
+        ImGui::SetNextWindowPos(info_pos);
+        ImGui::SetNextWindowSize(ImVec2(perf_panel_width, dock_height));
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.0f, 15.0f));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+
+        ImGui::Begin("##Performance", nullptr, dock_flags);
+
+        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+
+        // Memory monitoring
+        static int frame_count = 0;
+        frame_count++;
+        if (frame_count % 60 == 0)
+        { // Check every ~1 second at 60fps
+            checkMemoryUsage();
+        }
+        ImGui::Text("Memory: %zu MB", last_memory_check_);
+
+        // numbers of topics
+        // ImGui::Text("Topics: %zu", topic_names_.size());
+
+        ImGui::End();
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(2);
+    }
+    void drawTopicsPopup()
+    {
+        if (!show_topics_popup_)
+            return;
+
+        // Apply dock-style theming to the popup
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.0f, 15.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+
+        // Dock-style colors
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.05f, 0.05f, 0.9f));
+
+        // Set initial position and size
+        ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(100, 100), ImGuiCond_FirstUseEver);
+
+        // Create movable window
+        ImGuiWindowFlags popup_flags =
+            ImGuiWindowFlags_NoCollapse;
+
+        if (ImGui::Begin("📡 ROS2 Topics Manager", &show_topics_popup_, popup_flags))
+        {
+
+            // Header with topic count
+            ImGui::Text("📊 Available Topics: %zu", topic_names_.size());
+            ImGui::Separator();
+
+            // Topics list with custom styling
+            ImGui::BeginChild("TopicsList", ImVec2(0, 280), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+            {
+                std::lock_guard<std::mutex> lock(topics_mutex_);
+                auto now = std::chrono::steady_clock::now();
+
+                for (int i = 0; i < (int)topic_names_.size(); ++i)
+                {
+                    const auto &name = topic_names_[i];
+
+                    // Get Hz value
+                    float hz = 0.0f;
+                    auto hz_it = topic_hz_.find(name);
+                    if (hz_it != topic_hz_.end())
+                    {
+                        hz = hz_it->second;
+                    }
+
+                    // Format Hz text
+                    char hz_text[32];
+                    snprintf(hz_text, sizeof(hz_text), "%.1f Hz", hz);
+
+                    // Calculate elements dimensions
+                    const float circle_radius = 6.0f;
+                    const float padding = 4.0f;
+                    const float rounding = 4.0f;
+                    const float hz_square_fixed_width = 65.0f;
+
+                    ImVec2 hz_text_size = ImGui::CalcTextSize(hz_text);
+                    float line_height = ImGui::GetTextLineHeight();
+                    float element_height = std::max(line_height + 8.0f, circle_radius * 2 + 4.0f);
+
+                    // Store initial cursor position
+                    ImVec2 row_start = ImGui::GetCursorScreenPos();
+
+                    // Check if topic is alive
+                    bool alive = false;
+                    auto it = last_msg_time_.find(name);
+                    if (it != last_msg_time_.end())
+                        alive = (now - it->second) < alive_threshold_;
+
+                    // Draw status indicator circle
+                    ImU32 circle_col = alive ? IM_COL32(46, 204, 64, 255) : IM_COL32(255, 65, 54, 255);
+                    float circle_y_center = row_start.y + element_height * 0.5f;
+                    ImGui::GetWindowDrawList()->AddCircleFilled(
+                        {row_start.x + circle_radius + 2.0f, circle_y_center},
+                        circle_radius,
+                        circle_col);
+
+                    // Draw Hz badge
+                    float hz_square_x = row_start.x + circle_radius * 2 + 12.0f;
+                    float hz_square_height = hz_text_size.y + padding * 2;
+                    float hz_square_y = row_start.y + (element_height - hz_square_height) * 0.5f;
+
+                    ImVec2 hz_square_min = {hz_square_x, hz_square_y};
+                    ImVec2 hz_square_max = {hz_square_x + hz_square_fixed_width, hz_square_y + hz_square_height};
+
+                    // Hz badge background
+                    ImU32 badge_color = hz > 0 ? IM_COL32(40, 44, 52, 220) : IM_COL32(60, 20, 20, 220);
+                    ImGui::GetWindowDrawList()->AddRectFilled(
+                        hz_square_min, hz_square_max,
+                        badge_color, rounding);
+
+                    // Hz badge border
+                    ImU32 border_color = hz > 0 ? IM_COL32(100, 120, 140, 180) : IM_COL32(120, 60, 60, 180);
+                    ImGui::GetWindowDrawList()->AddRect(
+                        hz_square_min, hz_square_max,
+                        border_color, rounding, 0, 1.0f);
+
+                    // Hz text centered in badge
+                    ImVec2 hz_text_pos = {
+                        hz_square_x + (hz_square_fixed_width - hz_text_size.x) * 0.5f,
+                        hz_square_y + padding};
+                    ImU32 hz_text_color = hz > 0 ? IM_COL32(220, 220, 220, 255) : IM_COL32(180, 120, 120, 255);
+                    ImGui::GetWindowDrawList()->AddText(hz_text_pos, hz_text_color, hz_text);
+
+                    // Topic name area
+                    float topic_name_x = hz_square_max.x + 12.0f;
+                    float topic_name_y = row_start.y + (element_height - line_height) * 0.5f;
+
+                    // Set cursor for selectable
+                    ImGui::SetCursorScreenPos({topic_name_x, row_start.y});
+
+                    float available_width = ImGui::GetContentRegionAvail().x;
+                    bool is_selected = (i == selected_topic_idx_);
+
+                    // Custom selectable styling
+                    if (is_selected)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.5f, 0.8f, 0.6f));
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.4f, 0.6f, 0.9f, 0.7f));
+                    }
+                    else
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.2f, 0.3f));
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.25f, 0.25f, 0.25f, 0.5f));
+                    }
+
+                    ImGui::PushID(i);
+                    if (ImGui::Selectable("##topic_select", is_selected, 0, ImVec2(available_width, element_height)))
+                    {
+                        selected_topic_idx_ = i;
+                    }
+                    ImGui::PopID();
+                    ImGui::PopStyleColor(2);
+
+                    // Draw topic name
+                    ImU32 text_color = is_selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(200, 200, 200, 255);
+                    ImGui::GetWindowDrawList()->AddText(
+                        {topic_name_x + 8.0f, topic_name_y},
+                        text_color,
+                        name.c_str());
+                }
+            }
+            ImGui::EndChild();
+
+            ImGui::Separator();
+
+            // Action buttons
+            if (selected_topic_idx_ >= 0 && selected_topic_idx_ < (int)topic_names_.size())
+            {
+                ImGui::Text("📝 Selected: %s", topic_names_[selected_topic_idx_].c_str());
+
+                ImGui::Spacing();
+
+                // Subscribe button
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 0.8f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.7f, 0.3f, 0.9f));
+                if (ImGui::Button("➕ Subscribe", ImVec2(120, 30)))
+                {
+                    addPointCloudTopic(topic_names_[selected_topic_idx_]);
+                }
+                ImGui::PopStyleColor(2);
+
+                ImGui::SameLine();
+
+                // Unsubscribe button
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.2f, 0.2f, 0.8f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.3f, 0.3f, 0.9f));
+                if (ImGui::Button("➖ Unsubscribe", ImVec2(120, 30)))
+                {
+                    std::cout << "Removing topic: " << topic_names_[selected_topic_idx_] << std::endl;
+                    removePointCloudTopic(topic_names_[selected_topic_idx_]);
+                    selected_topic_idx_ = -1;
+                }
+                ImGui::PopStyleColor(2);
+            }
+            else
+            {
+                ImGui::TextDisabled("💡 Select a topic to subscribe/unsubscribe");
+            }
+        }
+        ImGui::End();
+
+        // Pop all style modifications
+        ImGui::PopStyleColor(8);
+        ImGui::PopStyleVar(4);
+    }
+
+    void drawFramesPopup()
+    {
+        if (!show_frames_popup_)
+            return;
+
+        ImGuiViewport *viewport = ImGui::GetMainViewport();
+        ImVec2 viewport_size = viewport->Size;
+
+        // Calculate dock position (same as in drawMacOSDock)
+        const float dock_height = 80.0f;
+        const float icon_size = 50.0f;
+        const float icon_spacing = 15.0f;
+        const float dock_padding = 15.0f;
+        const float perf_panel_width = 200.0f;
+        const float panel_spacing = 20.0f;
+
+        float dock_width = (icon_size * dock_icons_.size()) + (icon_spacing * (dock_icons_.size() - 1)) + (dock_padding * 2);
+        float total_width = dock_width + panel_spacing + perf_panel_width;
+
+        ImVec2 dock_pos = ImVec2(
+            (viewport_size.x - total_width) * 0.5f,
+            viewport_size.y - dock_height - 20.0f);
+
+        // Popup dimensions
+        const float popup_width = 450.0f;
+        const float popup_height = 280.0f;
+        const float popup_margin = 15.0f;
+
+        // Position popup above the dock, centered
+        ImVec2 popup_pos = ImVec2(
+            (viewport_size.x - popup_width) * 0.5f,  // Center horizontally
+            dock_pos.y - popup_height - popup_margin // Above dock with margin
+        );
+
+        // Apply dock-style theming
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 20.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 18.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+
+        // Elegant dark theme with subtle transparency
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.08f, 0.96f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.35f, 0.35f, 0.35f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.12f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
+
+        // Set fixed position and size
+        ImGui::SetNextWindowPos(popup_pos);
+        ImGui::SetNextWindowSize(ImVec2(popup_width, popup_height));
+
+        ImGuiWindowFlags popup_flags =
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoSavedSettings;
+
+        if (ImGui::Begin("##FramesPopup", &show_frames_popup_, popup_flags))
+        {
+
+            // Stylish header with icon and current frame info
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f)); // Blue accent
+            ImGui::Text("🔗 Transform Frames");
+            ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+
+            // Current frame indicator
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 0.7f, 1.0f)); // Green accent
+            ImGui::Text("Current: %s", fixed_frame_.empty() ? "None" : fixed_frame_.c_str());
+            ImGui::PopStyleColor();
+
+            // Separator with custom color
+            ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.4f, 0.4f, 0.4f, 0.8f));
+            ImGui::Separator();
+            ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+
+            // Frame count info
+            ImGui::Text("📊 Available Frames: %zu", available_frames_.size());
+            ImGui::Spacing();
+
+            // Custom styled frame list
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.05f, 0.05f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.25f, 0.25f, 0.25f, 0.6f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+
+            ImGui::BeginChild("FramesList", ImVec2(0, 140), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+            // Custom selectable styling
+            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
+
+            for (const auto &frame : available_frames_)
+            {
+                bool is_current = (fixed_frame_ == frame);
+
+                // Custom colors for current vs other frames
+                if (is_current)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.6f, 0.8f, 0.7f));
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.7f, 0.9f, 0.8f));
+                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.4f, 0.8f, 1.0f, 0.9f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                }
+                else
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.15f, 0.15f, 0.15f, 0.4f));
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.25f, 0.25f, 0.25f, 0.6f));
+                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.35f, 0.35f, 0.35f, 0.8f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
+                }
+
+                // Create selectable item with icon
+                std::string display_text = (is_current ? "🎯 " : "📍 ") + frame;
+
+                if (ImGui::Selectable(display_text.c_str(), is_current, 0, ImVec2(0, 28)))
+                {
+                    if (!is_current)
+                    {
+                        fixed_frame_ = frame;
+                        std::cout << "🔗 Selected TF frame: " << frame << std::endl;
+                    }
+                }
+
+                // Tooltip for long frame names
+                if (ImGui::IsItemHovered() && frame.length() > 25)
+                {
+                    ImGui::SetTooltip("%s", frame.c_str());
+                }
+
+                ImGui::PopStyleColor(4);
+            }
+
+            // Show message if no frames available
+            if (available_frames_.empty())
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 40.0f);
+                ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x * 0.5f - 100.0f);
+                ImGui::Text("🔍 No frames detected");
+                ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x * 0.5f - 80.0f);
+                ImGui::Text("Check your TF tree");
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::PopStyleVar(); // SelectableTextAlign
+            ImGui::EndChild();
+            ImGui::PopStyleVar(2);   // Child rounding and border
+            ImGui::PopStyleColor(2); // Child colors
+
+            ImGui::Spacing();
+
+            // Action buttons at bottom
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            // Reset TF button
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.4f, 0.2f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.5f, 0.3f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.6f, 0.4f, 1.0f));
+            if (ImGui::Button("🔄 Reset TF Buffer", ImVec2(150, 28)))
+            {
+                resetTFBuffer();
+                std::cout << "🔄 TF Buffer reset" << std::endl;
+            }
+            ImGui::PopStyleColor(3);
+
+            ImGui::SameLine();
+
+            // Close button
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.5f, 0.5f, 0.6f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.6f, 0.6f, 0.6f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+            if (ImGui::Button("✕ Close", ImVec2(80, 28)))
+            {
+                show_frames_popup_ = false;
+            }
+            ImGui::PopStyleColor(3);
+
+            // Frame count info at bottom right
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - 120.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+            ImGui::Text("TF Frames: %zu", frame_transforms_.size());
+            ImGui::PopStyleColor();
+        }
+        ImGui::End();
+
+        // Pop all style modifications
+        ImGui::PopStyleColor(4);
+        ImGui::PopStyleVar(5);
+    }
+
 private:
     // color for the terminals
     std::string green = "\033[1;32m";
@@ -1492,6 +2049,41 @@ private:
     // mesh glb
     PlyMesh loaded_mesh_glb;
     bool mesh_glb_loaded = false;
+
+    // Add these to your Ros2GLViewer class header (private section)
+    enum class DockItem
+    {
+        TOPICS = 0,
+        FRAMES,
+        FILES,
+        MODELS,
+        SETTINGS,
+        INFO
+    };
+
+    DockItem current_panel_ = DockItem::TOPICS;
+
+    struct DockIcon
+    {
+        const char *icon;
+        const char *tooltip;
+        DockItem item;
+    };
+
+    std::vector<DockIcon> dock_icons_ = {
+        {"📡", "ROS2 Topics", DockItem::TOPICS},
+        {"🔗", "TF Frames", DockItem::FRAMES},
+        {"📁", "Load Files", DockItem::FILES},
+        {"🤖", "3D Models", DockItem::MODELS},
+        {"⚙️", "Settings", DockItem::SETTINGS},
+        {"ℹ️", "Info", DockItem::INFO}};
+
+    bool show_topics_popup_ = false;
+    bool show_frames_popup_ = false;
+    bool show_files_popup_ = false;
+    bool show_models_popup_ = false;
+    bool show_settings_popup_ = false;
+    bool show_info_popup_ = false;
 };
 
 int main(int argc, char **argv)
