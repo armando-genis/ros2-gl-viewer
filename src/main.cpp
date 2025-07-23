@@ -55,6 +55,8 @@
 #include <stdexcept>
 #include <regex>
 
+#include <stb_image.h>
+
 static Eigen::Isometry3f toEigen(const geometry_msgs::msg::Transform &t)
 {
     Eigen::Quaternionf q(t.rotation.w,
@@ -121,6 +123,14 @@ public:
         if (glb_shader_program_ != 0)
         {
             glDeleteProgram(glb_shader_program_);
+        }
+
+        for (auto &icon : dock_icons_)
+        {
+            if (icon.texture_id != 0)
+            {
+                glDeleteTextures(1, &icon.texture_id);
+            }
         }
     }
 
@@ -312,6 +322,19 @@ public:
             return false;
         }
         std::cout << green << "Successfully initialized GLB shader" << reset << std::endl;
+
+        // Load dock icon textures
+        for (auto &icon : dock_icons_)
+        {
+            if (!icon.image_path.empty())
+            {
+                icon.texture_id = loadImageTexture(icon.image_path);
+                if (icon.texture_id != 0)
+                {
+                    std::cout << "Loaded texture for " << icon.tooltip << std::endl;
+                }
+            }
+        }
 
         return true;
     }
@@ -1395,14 +1418,71 @@ public:
         }
     }
 
+    // Function to load image as OpenGL texture
+    GLuint loadImageTexture(const std::string &path)
+    {
+        int width, height, channels;
+        unsigned char *data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+
+        if (!data)
+        {
+            std::cerr << "Failed to load image: " << path << std::endl;
+            return 0;
+        }
+
+        // Debug: Print image info
+        std::cout << "Loaded image: " << path << std::endl;
+        std::cout << "  Resolution: " << width << "x" << height << std::endl;
+        std::cout << "  Channels: " << channels << std::endl;
+
+        GLuint texture_id;
+        glGenTextures(1, &texture_id);
+        glBindTexture(GL_TEXTURE_2D, texture_id);
+
+        // Improved texture parameters for better quality
+        if (width >= 100 || height >= 100)
+        {
+            // For larger images, use linear filtering with mipmaps
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        }
+        else
+        {
+            // For smaller images, use nearest neighbor to maintain sharpness
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        // Upload texture data
+        GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+
+        // Generate mipmaps for better scaling quality
+        if (width >= 100 || height >= 100)
+        {
+            glGenerateMipmap(GL_TEXTURE_2D);
+            std::cout << "  Generated mipmaps for better scaling" << std::endl;
+        }
+
+        stbi_image_free(data);
+
+        // Store original dimensions for better scaling decisions
+        std::cout << "  Texture ID: " << texture_id << std::endl;
+
+        return texture_id;
+    }
+
     void drawMacOSDock()
     {
         ImGuiViewport *viewport = ImGui::GetMainViewport();
         ImVec2 viewport_size = viewport->Size;
 
         // Dock dimensions
-        const float dock_height = 80.0f;
-        const float icon_size = 50.0f;
+        const float dock_height = 85.0f;
+        const float icon_size = 55.0f;
         const float icon_spacing = 15.0f;
         const float dock_padding = 15.0f;
 
@@ -1441,7 +1521,7 @@ public:
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dock_padding, dock_padding));
 
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(icon_spacing, 0));
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.9f)); // Dark translucent
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.95f)); // Dark translucent
         ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
 
         ImGui::Begin("##Dock", nullptr, dock_flags);
@@ -1471,9 +1551,79 @@ public:
 
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, icon_size * 0.25f);
 
-            // Create button with icon
+            // Create button with image or icon
             ImGui::PushID(static_cast<int>(i));
-            if (ImGui::Button(icon.icon, ImVec2(icon_size, icon_size)))
+
+            bool clicked = false;
+
+            if (icon.texture_id != 0)
+            {
+                // manually create the same background as text buttons
+                ImVec2 button_pos = ImGui::GetCursorScreenPos();
+                ImVec2 button_size = ImVec2(icon_size, icon_size);
+
+                // Check if button is hovered
+                ImVec2 mouse_pos = ImGui::GetMousePos();
+                bool is_hovered = (mouse_pos.x >= button_pos.x && mouse_pos.x <= button_pos.x + button_size.x &&
+                                   mouse_pos.y >= button_pos.y && mouse_pos.y <= button_pos.y + button_size.y);
+
+                // Get the same colors used by regular buttons
+                ImU32 bg_color;
+                if (is_selected)
+                {
+                    bg_color = is_hovered ? ImGui::GetColorU32(ImVec4(0.5f, 0.7f, 1.0f, 0.9f)) : // ButtonHovered color
+                                   ImGui::GetColorU32(ImVec4(0.4f, 0.6f, 1.0f, 0.8f));           // Button color
+                }
+                else
+                {
+                    bg_color = is_hovered ? ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.3f, 0.8f)) : // ButtonHovered color
+                                   ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.2f, 0.6f));           // Button color
+                }
+
+                // Draw custom background with same rounding as text buttons
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                    button_pos,
+                    ImVec2(button_pos.x + button_size.x, button_pos.y + button_size.y),
+                    bg_color,
+                    icon_size * 0.25f);
+
+                // Create invisible button for click detection
+                ImGui::SetCursorScreenPos(button_pos);
+                clicked = ImGui::InvisibleButton(("##invisible_" + std::to_string(i)).c_str(), button_size);
+
+                // Draw the image centered on top
+                ImVec2 image_size = ImVec2(icon_size - 8.0f, icon_size - 8.0f);
+                ImVec2 image_pos = ImVec2(
+                    button_pos.x + (button_size.x - image_size.x) * 0.5f,
+                    button_pos.y + (button_size.y - image_size.y) * 0.5f);
+
+                // Try adding a subtle border around the image for better definition
+                float button_rounding = icon_size * 0.25f;
+                ImVec2 border_padding = ImVec2(1.0f, 1.0f);
+
+                ImGui::GetWindowDrawList()->AddRect(
+                    ImVec2(button_pos.x + border_padding.x, button_pos.y + border_padding.y),
+                    ImVec2(button_pos.x + button_size.x - border_padding.x, button_pos.y + button_size.y - border_padding.y),
+                    IM_COL32(255, 255, 255, 30), // Very subtle white border
+                    button_rounding - border_padding.x,
+                    0, 1.0f // Border thickness
+                );
+
+                ImGui::GetWindowDrawList()->AddImage(
+                    (ImTextureID)(intptr_t)icon.texture_id,
+                    image_pos,
+                    ImVec2(image_pos.x + image_size.x, image_pos.y + image_size.y),
+                    ImVec2(0, 0), ImVec2(1, 1),
+                    IM_COL32(255, 255, 255, 255) // White tint
+                );
+            }
+            else
+            {
+                // Fallback to text button if no texture
+                clicked = ImGui::Button(icon.icon, ImVec2(icon_size, icon_size));
+            }
+
+            if (clicked)
             {
                 current_panel_ = icon.item;
 
@@ -1506,6 +1656,7 @@ public:
                     break;
                 }
             }
+
             ImGui::PopID();
 
             // Tooltip on hover
@@ -1555,6 +1706,7 @@ public:
         ImGui::PopStyleColor(2);
         ImGui::PopStyleVar(2);
     }
+
     void drawTopicsPopup()
     {
         if (!show_topics_popup_)
@@ -2068,15 +2220,17 @@ private:
         const char *icon;
         const char *tooltip;
         DockItem item;
+        GLuint texture_id = 0;  // Add texture ID
+        std::string image_path; // Add image path
     };
 
     std::vector<DockIcon> dock_icons_ = {
-        {"📡", "ROS2 Topics", DockItem::TOPICS},
-        {"🔗", "TF Frames", DockItem::FRAMES},
-        {"📁", "Load Files", DockItem::FILES},
-        {"🤖", "3D Models", DockItem::MODELS},
-        {"⚙️", "Settings", DockItem::SETTINGS},
-        {"ℹ️", "Info", DockItem::INFO}};
+        {"📡", "ROS2 Topics", DockItem::TOPICS, 0, "4.png"},
+        {"🔗", "TF Frames", DockItem::FRAMES, 0, "7.png"},
+        {"📁", "Reset tf", DockItem::FILES, 0, "8.png"},
+        {"🤖", "3D Models", DockItem::MODELS, 0, "5.png"},
+        {"⚙️", "Lanelet", DockItem::SETTINGS, 0, "6.png"},
+        {"ℹ️", "Info", DockItem::INFO, 0, ""}};
 
     bool show_topics_popup_ = false;
     bool show_frames_popup_ = false;
