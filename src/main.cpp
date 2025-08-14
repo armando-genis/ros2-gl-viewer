@@ -41,6 +41,8 @@
 #include "glk/PclLoader.hpp"
 #include "glk/LaneletLoader.hpp"
 #include "glk/modelUpload.hpp"
+#include "glk/ThickLines.hpp"
+#include <glk/MapboxRenderer.hpp>
 
 #include <guik/gl_canvas.hpp>
 #include <guik/camera_control.hpp>
@@ -132,6 +134,16 @@ public:
                 glDeleteTextures(1, &icon.texture_id);
             }
         }
+
+        mapbox_.reset();         // <-- add this if you haven’t
+        mesh_glb_loaded = false; // your existing cleanup
+        mesh_map_loaded = false;
+
+        mapbox_should_exit_.store(true);
+        if (mapbox_thread_.joinable())
+        {
+            mapbox_thread_.join();
+        }
     }
 
     void setupCustomImGuiColors()
@@ -141,54 +153,6 @@ public:
         // color set to hex to 1.0 rgb: https://rgbcolorpicker.com/0-1#google_vignette
 
         ImGuiStyle &style = ImGui::GetStyle();
-        ImVec4 *colors = style.Colors;
-
-        // Background colors
-        colors[ImGuiCol_WindowBg] = ImVec4(0.322f, 0.416f, 0.251f, 0.9f); // Dark gray background
-        colors[ImGuiCol_ChildBg] = ImVec4(0.098f, 0.125f, 0.078f, 0.40f); // Child window background
-        colors[ImGuiCol_PopupBg] = ImVec4(0.098f, 0.125f, 0.078f, 0.40f); // Popup background
-
-        // Button colors
-        colors[ImGuiCol_Button] = ImVec4(0.451f, 0.584f, 0.349f, 0.8f); // Green button
-        // colors[ImGuiCol_Button] = ImVec4(0.306f, 0.341f, 0.376f, 0.8f); // gray button
-
-        colors[ImGuiCol_ButtonHovered] = ImVec4(0.471f, 0.576f, 0.541f, 1.00f); // Hovered button
-        colors[ImGuiCol_ButtonActive] = ImVec4(0.4f, 0.42f, 0.369f, 1.00f);     // Pressed button
-
-        // Title bar
-        colors[ImGuiCol_TitleBg] = ImVec4(0.035f, 0.043f, 0.027f, 1.00f);
-        colors[ImGuiCol_TitleBgActive] = ImVec4(0.035f, 0.043f, 0.027f, 0.792f);
-        colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.035f, 0.043f, 0.027f, 0.792f);
-
-        // Slider
-        colors[ImGuiCol_SliderGrab] = ImVec4(0.639f, 0.718f, 0.792f, 1.00f);
-        colors[ImGuiCol_SliderGrabActive] = ImVec4(0.639f, 0.718f, 0.792f, 1.00f);
-
-        colors[ImGuiCol_FrameBg] = ImVec4(0.098f, 0.125f, 0.078f, 0.40f);
-        colors[ImGuiCol_FrameBgHovered] = ImVec4(0.098f, 0.125f, 0.078f, 0.90f);
-        colors[ImGuiCol_FrameBgActive] = ImVec4(0.098f, 0.125f, 0.078f, 0.90f);
-
-        colors[ImGuiCol_Separator] = ImVec4(0.451f, 0.584f, 0.349f, 0.8f);
-        colors[ImGuiCol_SeparatorHovered] = ImVec4(0.471f, 0.576f, 0.541f, 1.00f);
-        colors[ImGuiCol_SeparatorActive] = ImVec4(0.4f, 0.42f, 0.369f, 1.00f);
-
-        // Style adjustments
-        style.WindowRounding = 5.0f;    // Main window corners
-        style.ChildRounding = 5.0f;     // Child window corners
-        style.FrameRounding = 3.0f;     // Buttons, input fields, sliders
-        style.PopupRounding = 3.0f;     // Popup windows
-        style.ScrollbarRounding = 3.0f; // Scrollbar corners
-        style.GrabRounding = 3.0f;      // Slider handles, scrollbar grabs
-        style.TabRounding = 3.0f;       // Tab corners
-
-        // ===== SIZES & SPACING =====
-        style.WindowPadding = ImVec2(13.0f, 13.0f);  // Padding inside windows
-        style.FramePadding = ImVec2(8.0f, 4.0f);     // Padding inside frames (buttons, inputs)
-        style.ItemSpacing = ImVec2(8.0f, 6.0f);      // Spacing between items
-        style.ItemInnerSpacing = ImVec2(6.0f, 4.0f); // Spacing inside items
-        style.IndentSpacing = 20.0f;                 // Indentation for tree nodes
-        style.ScrollbarSize = 16.0f;                 // Scrollbar width
-        style.GrabMinSize = 12.0f;                   // Minimum slider/scrollbar grab size
 
         // ===== SPECIAL EFFECTS =====
         style.WindowMenuButtonPosition = ImGuiDir_Left; // Window menu button position
@@ -336,11 +300,44 @@ public:
             }
         }
 
+        {
+            const int fb_w = framebuffer_size().x();
+            const int fb_h = framebuffer_size().y();
+            try
+            {
+                mapbox_.reset(new MapboxRenderer(fb_w, fb_h, mapbox_token_, /*pixelRatio=*/1.0f));
+                mapbox_->setStyle(map_style_);
+                mapbox_->setMapCenter(40.7589, -73.9851);
+                mapbox_->setZoom(15.0);
+                mapbox_->setBearing(map_bearing_);
+                mapbox_->setPitch(map_pitch_);
+                mapbox_enabled_ = true; // or leave false and let the UI toggle it on
+                last_mapbox_render_ = std::chrono::steady_clock::now() - mapbox_update_period_ * 2;
+                std::cout << "[Mapbox] initialized at " << fb_w << "x" << fb_h << std::endl;
+
+                startMapboxThread();
+                std::cout << "[Mapbox] rendering thread started" << std::endl;
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "[Mapbox] init failed: " << e.what() << std::endl;
+                mapbox_.reset();
+                mapbox_enabled_ = false;
+            }
+        }
+
         return true;
     }
 
     void draw_ui() override
     {
+
+        if (!rclcpp::ok())
+        {
+            close(); // tells guik::Application to stop its run loop
+            return;
+        }
+
         // get the current time
         auto now = std::chrono::steady_clock::now();
         // get the tf based on the frame
@@ -362,27 +359,13 @@ public:
         drawMacOSDock();
         drawTopicsPopup();
         drawFramesPopup();
+        drawModelsPopup();
 
         // Show main canvas settings
         main_canvas_->draw_ui();
 
         // Main options window
         ImGui::Begin("ros2 Viewer", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-        // Position window at bottom of screen
-        // ImVec2 viewport_size = ImGui::GetMainViewport()->Size;
-        // float panel_height = 300.0f; // Adjust height as needed
-
-        // ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-        // ImGui::SetNextWindowSize(ImVec2(450.0f, viewport_size.y), ImGuiCond_Always);
-
-        // // Main options window - Fixed bottom panel
-        // ImGui::Begin("ros2 Viewer", nullptr,
-        //              ImGuiWindowFlags_NoMove |
-        //                  ImGuiWindowFlags_NoResize |
-        //                  ImGuiWindowFlags_NoCollapse |
-        //                  ImGuiWindowFlags_NoTitleBar // Optional: removes title bar
-        // );
-
         // FPS counter
         ImGui::Separator();
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
@@ -975,12 +958,77 @@ public:
             lanelet_loader_.stripes(shader);
         }
 
+        // === Mapbox: update texture at ~10 Hz then draw ===
+        if (mapbox_ && mapbox_enabled_)
+        {
+            mapbox_->uploadLatestPixelsToTexture();
+
+            // ✅ ADD DEBUG INFO
+            static int debug_counter = 0;
+            if (++debug_counter % 60 == 0)
+            { // Every ~1 second at 60fps
+                std::cout << "[Mapbox] Drawing map at position: "
+                          << map_pos_.transpose()
+                          << ", size: " << map_size_ << std::endl;
+            }
+
+            GLboolean depthWas = glIsEnabled(GL_DEPTH_TEST);
+            glDisable(GL_DEPTH_TEST);
+            mapbox_->drawMap(view, proj, map_pos_, map_size_, map_rotation_z_);
+            if (depthWas)
+                glEnable(GL_DEPTH_TEST);
+        }
+
         // render text
         text_renderer_.renderWorldText(view, proj);
 
         // 9) unbind & blit
         main_canvas_->unbind();
         main_canvas_->render_to_screen();
+    }
+
+    void startMapboxThread()
+    {
+        mapbox_thread_ = std::thread([this]()
+                                     {
+        std::cout << "[Mapbox Thread] 🚀 Thread started" << std::endl;
+        
+        while (!mapbox_should_exit_.load()) {
+            // ✅ DEBUG ALL CONDITIONS
+            bool mapbox_exists = (mapbox_ != nullptr);
+            bool mapbox_is_enabled = mapbox_enabled_;
+            auto now = std::chrono::steady_clock::now();
+            auto time_since_last = now - last_mapbox_render_;
+            bool time_condition = (time_since_last >= mapbox_update_period_);
+            
+            // Print debug every few seconds
+            static int debug_count = 0;
+            if (++debug_count % 40 == 0) { // Every ~10 seconds
+                std::cout << "[Mapbox Thread] Status:" << std::endl;
+                std::cout << "  mapbox_ exists: " << mapbox_exists << std::endl;
+                std::cout << "  mapbox_enabled_: " << mapbox_is_enabled << std::endl;
+                std::cout << "  time_since_last: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_since_last).count() << "ms" << std::endl;
+                std::cout << "  update_period_: " << mapbox_update_period_.count() << "ms" << std::endl;
+                std::cout << "  time_condition: " << time_condition << std::endl;
+            }
+            
+            if (mapbox_exists && mapbox_is_enabled) {
+                if (time_condition) {
+                    std::cout << "[Mapbox Thread] 🎯 Calling render()..." << std::endl;
+                    mapbox_->render();  // This should trigger your debug output
+                    last_mapbox_render_ = now;
+                    std::cout << "[Mapbox Thread] ✅ render() call completed" << std::endl;
+                } else if (debug_count % 40 == 0) {
+                    std::cout << "[Mapbox Thread] ⏰ Waiting for timer..." << std::endl;
+                }
+            } else if (debug_count % 40 == 0) {
+                std::cout << "[Mapbox Thread] ❌ Conditions not met" << std::endl;
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        
+        std::cout << "[Mapbox Thread] 🛑 Thread exiting" << std::endl; });
     }
 
     void checkMemoryUsage()
@@ -1481,8 +1529,8 @@ public:
         ImVec2 viewport_size = viewport->Size;
 
         // Dock dimensions
-        const float dock_height = 85.0f;
-        const float icon_size = 55.0f;
+        const float dock_height = 80.0f;
+        const float icon_size = 50.0f;
         const float icon_spacing = 15.0f;
         const float dock_padding = 15.0f;
 
@@ -1519,10 +1567,10 @@ public:
         // Custom dock styling
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 25.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dock_padding, dock_padding));
-
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(icon_spacing, 0));
+
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.95f)); // Dark translucent
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
 
         ImGui::Begin("##Dock", nullptr, dock_flags);
 
@@ -1540,11 +1588,13 @@ public:
             bool is_selected = (current_panel_ == icon.item);
             if (is_selected)
             {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.4f, 0.6f, 1.0f, 0.8f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.5f, 0.7f, 1.0f, 0.9f));
+                // Selected: use the hover colors permanently
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));           // ✅ Use hover color as normal state
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.35f, 0.35f, 0.35f, 0.9f)); // ✅ Slightly lighter on hover
             }
             else
             {
+                // Unselected: normal gray
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
             }
@@ -1571,8 +1621,9 @@ public:
                 ImU32 bg_color;
                 if (is_selected)
                 {
-                    bg_color = is_hovered ? ImGui::GetColorU32(ImVec4(0.5f, 0.7f, 1.0f, 0.9f)) : // ButtonHovered color
-                                   ImGui::GetColorU32(ImVec4(0.4f, 0.6f, 1.0f, 0.8f));           // Button color
+                    // Selected: use hover-like gray colors instead of blue
+                    bg_color = is_hovered ? ImGui::GetColorU32(ImVec4(0.35f, 0.35f, 0.35f, 0.9f)) : // Slightly lighter on hover
+                                   ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.3f, 0.8f));              // Hover color as normal state
                 }
                 else
                 {
@@ -1591,8 +1642,9 @@ public:
                 ImGui::SetCursorScreenPos(button_pos);
                 clicked = ImGui::InvisibleButton(("##invisible_" + std::to_string(i)).c_str(), button_size);
 
-                // Draw the image centered on top
-                ImVec2 image_size = ImVec2(icon_size - 8.0f, icon_size - 8.0f);
+                // Increased padding for better icon spacing
+                const float image_padding = 10.0f; // Increased for more padding
+                ImVec2 image_size = ImVec2(icon_size - (image_padding * 2), icon_size - (image_padding * 2));
                 ImVec2 image_pos = ImVec2(
                     button_pos.x + (button_size.x - image_size.x) * 0.5f,
                     button_pos.y + (button_size.y - image_size.y) * 0.5f);
@@ -1631,26 +1683,32 @@ public:
                 switch (icon.item)
                 {
                 case DockItem::TOPICS:
+                    // Topics panel can coexist with others, so no auto-close
                     show_topics_popup_ = !show_topics_popup_;
                     std::cout << "Toggled ROS2 Topics popup" << std::endl;
                     break;
                 case DockItem::FRAMES:
+                    closeAllPanelsExceptTopics(); // Close other panels first
                     show_frames_popup_ = !show_frames_popup_;
                     std::cout << "Toggled TF Frames popup" << std::endl;
                     break;
                 case DockItem::FILES:
+                    closeAllPanelsExceptTopics(); // Close other panels first
                     show_files_popup_ = !show_files_popup_;
                     std::cout << "Toggled Files popup" << std::endl;
                     break;
                 case DockItem::MODELS:
+                    closeAllPanelsExceptTopics(); // Close other panels first
                     show_models_popup_ = !show_models_popup_;
                     std::cout << "Toggled Models popup" << std::endl;
                     break;
                 case DockItem::SETTINGS:
+                    closeAllPanelsExceptTopics(); // Close other panels first
                     show_settings_popup_ = !show_settings_popup_;
                     std::cout << "Toggled Settings popup" << std::endl;
                     break;
                 case DockItem::INFO:
+                    closeAllPanelsExceptTopics(); // Close other panels first
                     show_info_popup_ = !show_info_popup_;
                     std::cout << "Toggled Info popup" << std::endl;
                     break;
@@ -1699,6 +1757,9 @@ public:
         }
         ImGui::Text("Memory: %zu MB", last_memory_check_);
 
+        // print current frame
+        ImGui::Text("Current Frame: %s", fixed_frame_.c_str());
+
         // numbers of topics
         // ImGui::Text("Topics: %zu", topic_names_.size());
 
@@ -1736,11 +1797,11 @@ public:
         ImGuiWindowFlags popup_flags =
             ImGuiWindowFlags_NoCollapse;
 
-        if (ImGui::Begin("📡 ROS2 Topics Manager", &show_topics_popup_, popup_flags))
+        if (ImGui::Begin("ROS2 Topics Manager", &show_topics_popup_, popup_flags))
         {
 
             // Header with topic count
-            ImGui::Text("📊 Available Topics: %zu", topic_names_.size());
+            ImGui::Text("Available Topics: %zu", topic_names_.size());
             ImGui::Separator();
 
             // Topics list with custom styling
@@ -1871,7 +1932,7 @@ public:
                 // Subscribe button
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 0.8f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.7f, 0.3f, 0.9f));
-                if (ImGui::Button("➕ Subscribe", ImVec2(120, 30)))
+                if (ImGui::Button("Subscribe", ImVec2(120, 30)))
                 {
                     addPointCloudTopic(topic_names_[selected_topic_idx_]);
                 }
@@ -1882,7 +1943,7 @@ public:
                 // Unsubscribe button
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.2f, 0.2f, 0.8f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.3f, 0.3f, 0.9f));
-                if (ImGui::Button("➖ Unsubscribe", ImVec2(120, 30)))
+                if (ImGui::Button("Unsubscribe", ImVec2(120, 30)))
                 {
                     std::cout << "Removing topic: " << topic_names_[selected_topic_idx_] << std::endl;
                     removePointCloudTopic(topic_names_[selected_topic_idx_]);
@@ -1892,7 +1953,7 @@ public:
             }
             else
             {
-                ImGui::TextDisabled("💡 Select a topic to subscribe/unsubscribe");
+                ImGui::TextDisabled("Select a topic to subscribe/unsubscribe");
             }
         }
         ImGui::End();
@@ -1926,27 +1987,32 @@ public:
             viewport_size.y - dock_height - 20.0f);
 
         // Popup dimensions
-        const float popup_width = 450.0f;
-        const float popup_height = 280.0f;
-        const float popup_margin = 15.0f;
+        const float popup_width = 300.0f;
+        const float popup_height = 200.0f;
+        const float popup_margin = 10.0f;
 
         // Position popup above the dock, centered
         ImVec2 popup_pos = ImVec2(
-            (viewport_size.x - popup_width) * 0.5f,  // Center horizontally
-            dock_pos.y - popup_height - popup_margin // Above dock with margin
-        );
+            dock_pos.x - dock_padding,
+            dock_pos.y - popup_height - popup_margin);
 
         // Apply dock-style theming
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 20.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 18.0f));
+        const float window_rounding = 20.0f;
+        const float child_rounding = window_rounding + 5.0f;
+
+        // Define consistent background color
+        ImVec4 popup_bg_color = ImVec4(0.1f, 0.1f, 0.1f, 0.95f);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, window_rounding);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
 
         // Elegant dark theme with subtle transparency
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.08f, 0.96f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.35f, 0.35f, 0.35f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.12f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, popup_bg_color);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, popup_bg_color);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
 
         // Set fixed position and size
@@ -1962,142 +2028,792 @@ public:
 
         if (ImGui::Begin("##FramesPopup", &show_frames_popup_, popup_flags))
         {
+            // === CUSTOM HEADER WITH BACKGROUND ===
+            ImVec2 window_pos = ImGui::GetWindowPos();
+            ImVec2 window_size = ImGui::GetWindowSize();
+            ImDrawList *draw_list = ImGui::GetWindowDrawList();
 
-            // Stylish header with icon and current frame info
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f)); // Blue accent
-            ImGui::Text("🔗 Transform Frames");
-            ImGui::PopStyleColor();
+            // Header dimensions
+            const float header_height = 60.0f;
+            const float header_padding_y = 15.0f;
+            const float header_padding_x = 15.0f;
 
-            ImGui::SameLine();
-            ImGui::Spacing();
-            ImGui::SameLine();
+            // Draw header background rectangle with rounded top corners
+            ImVec2 header_min = ImVec2(window_pos.x, window_pos.y);
+            ImVec2 header_max = ImVec2(window_pos.x + window_size.x, window_pos.y + header_height);
 
-            // Current frame indicator
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 0.7f, 1.0f)); // Green accent
-            ImGui::Text("Current: %s", fixed_frame_.empty() ? "None" : fixed_frame_.c_str());
-            ImGui::PopStyleColor();
+            draw_list->AddRectFilled(
+                header_min,
+                header_max,
+                IM_COL32(255, 255, 255, 30),
+                window_rounding,
+                ImDrawFlags_RoundCornersTop);
 
-            // Separator with custom color
-            ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.4f, 0.4f, 0.4f, 0.8f));
-            ImGui::Separator();
-            ImGui::PopStyleColor();
+            // Add subtle border at bottom of header
+            draw_list->AddLine(
+                ImVec2(header_min.x, header_max.y),
+                ImVec2(header_max.x, header_max.y),
+                IM_COL32(50, 50, 50, 255), 1.0f);
 
-            ImGui::Spacing();
+            // Set cursor position for header content
+            ImGui::SetCursorPosY(header_padding_y);
+            ImGui::SetCursorPosX(header_padding_x);
 
-            // Frame count info
-            ImGui::Text("📊 Available Frames: %zu", available_frames_.size());
-            ImGui::Spacing();
+            // Header text
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
+            ImGui::Text("Transform Frames");
 
-            // Custom styled frame list
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.05f, 0.05f, 0.9f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.25f, 0.25f, 0.25f, 0.6f));
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
-
-            ImGui::BeginChild("FramesList", ImVec2(0, 140), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-
-            // Custom selectable styling
-            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
-
-            for (const auto &frame : available_frames_)
+            // Show current selection
+            if (!fixed_frame_.empty())
             {
-                bool is_current = (fixed_frame_ == frame);
+                ImGui::SetCursorPosX(header_padding_x);
+                ImGui::TextColored(ImVec4(0.6f, 1.0f, 0.6f, 1.0f), "Current: %s", fixed_frame_.c_str());
+            }
+            ImGui::PopStyleColor();
 
-                // Custom colors for current vs other frames
-                if (is_current)
-                {
-                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.6f, 0.8f, 0.7f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.7f, 0.9f, 0.8f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.4f, 0.8f, 1.0f, 0.9f));
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-                }
-                else
-                {
-                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.15f, 0.15f, 0.15f, 0.4f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.25f, 0.25f, 0.25f, 0.6f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.35f, 0.35f, 0.35f, 0.8f));
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
-                }
+            // === END CUSTOM HEADER ===
 
-                // Create selectable item with icon
-                std::string display_text = (is_current ? "🎯 " : "📍 ") + frame;
+            // Position the list to fill exactly from header to window bottom
+            ImGui::SetCursorPosX(0.0f);
+            ImGui::SetCursorPosY(header_height);
 
-                if (ImGui::Selectable(display_text.c_str(), is_current, 0, ImVec2(0, 28)))
+            // Calculate exact dimensions
+            float list_width = window_size.x;
+            float list_height = window_size.y - header_height;
+
+            // Create child window with same background color as popup
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, popup_bg_color);
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0.02f, 0.02f, 0.02f, 0.5f));
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(0.4f, 0.4f, 0.4f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+
+            // Use BIGGER rounding for child so corners extend beyond parent
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, child_rounding);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 10.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, child_rounding * 0.6f);
+            ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 12.0f);
+
+            ImGui::BeginChild("FramesList", ImVec2(list_width, list_height), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+            // Display available frames or show "no frames" message
+            if (!available_frames_.empty())
+            {
+                for (const auto &frame : available_frames_)
                 {
-                    if (!is_current)
+                    bool is_selected = (fixed_frame_ == frame);
+
+                    // Style for selected vs unselected items
+                    if (is_selected)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.6f, 0.8f, 0.7f));
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.7f, 0.9f, 0.8f));
+                        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.4f, 0.8f, 1.0f, 0.9f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                    }
+                    else
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.15f, 0.15f, 0.15f, 0.4f));
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.25f, 0.25f, 0.25f, 0.6f));
+                        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.35f, 0.35f, 0.35f, 0.8f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
+                    }
+
+                    // Create an invisible selectable for the entire row
+                    const float item_height = 32.0f;
+                    const float circle_radius = 4.0f;
+                    const float circle_x_offset = 12.0f;
+                    const float text_x_offset = circle_x_offset + circle_radius * 2 + 8.0f; // Circle + spacing
+
+                    // Use invisible button for the entire area
+                    ImVec2 item_start_pos = ImGui::GetCursorScreenPos();
+                    bool clicked = ImGui::InvisibleButton(("##" + frame).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, item_height));
+
+                    // Get the item rect
+                    ImVec2 item_min = ImGui::GetItemRectMin();
+                    ImVec2 item_max = ImGui::GetItemRectMax();
+
+                    // Apply background color manually
+                    ImDrawList *item_draw_list = ImGui::GetWindowDrawList();
+                    if (ImGui::IsItemHovered() || is_selected)
+                    {
+                        ImU32 bg_color;
+                        if (is_selected)
+                            bg_color = ImGui::IsItemHovered() ? IM_COL32(77, 179, 230, 204) : // HeaderHovered
+                                           IM_COL32(51, 153, 204, 179);                       // Header
+                        else
+                            bg_color = IM_COL32(64, 64, 64, 153); // HeaderHovered for unselected
+
+                        item_draw_list->AddRectFilled(item_min, item_max, bg_color);
+                    }
+
+                    // Handle click
+                    if (clicked && !is_selected)
                     {
                         fixed_frame_ = frame;
-                        std::cout << "🔗 Selected TF frame: " << frame << std::endl;
+                        std::cout << "Selected TF frame: " << frame << std::endl;
                     }
-                }
 
-                // Tooltip for long frame names
-                if (ImGui::IsItemHovered() && frame.length() > 25)
-                {
-                    ImGui::SetTooltip("%s", frame.c_str());
-                }
+                    // Calculate vertical center for both circle and text
+                    float vertical_center = (item_min.y + item_max.y) * 0.5f;
 
-                ImGui::PopStyleColor(4);
+                    // Draw green circle for selected frame, perfectly centered
+                    if (is_selected)
+                    {
+                        ImVec2 circle_center = ImVec2(
+                            item_min.x + circle_x_offset,
+                            vertical_center);
+
+                        item_draw_list->AddCircleFilled(
+                            circle_center,
+                            circle_radius,
+                            IM_COL32(76, 175, 80, 255));
+                    }
+
+                    // Draw text, perfectly aligned with circle vertical center
+                    ImVec2 text_pos = ImVec2(
+                        item_min.x + text_x_offset,
+                        vertical_center - ImGui::GetTextLineHeight() * 0.5f // Center text vertically
+                    );
+
+                    item_draw_list->AddText(text_pos, ImGui::GetColorU32(ImGuiCol_Text), frame.c_str());
+
+                    // Tooltip for long frame names
+                    if (ImGui::IsItemHovered() && frame.length() > 25)
+                    {
+                        ImGui::SetTooltip("%s", frame.c_str());
+                    }
+
+                    ImGui::PopStyleColor(4);
+                }
             }
-
-            // Show message if no frames available
-            if (available_frames_.empty())
+            else
             {
+                // Show message when no frames are available
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 40.0f);
-                ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x * 0.5f - 100.0f);
-                ImGui::Text("🔍 No frames detected");
-                ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x * 0.5f - 80.0f);
-                ImGui::Text("Check your TF tree");
+
+                // Center the text vertically and horizontally
+                float text_y_offset = ImGui::GetContentRegionAvail().y * 0.4f;
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + text_y_offset);
+
+                // "No frames detected" text
+                const char *no_frames_text = "No frames detected";
+                float text_width = ImGui::CalcTextSize(no_frames_text).x;
+                ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - text_width) * 0.5f);
+                ImGui::Text("%s", no_frames_text);
+
+                // "Check your TF tree" text
+                const char *check_tf_text = "Check your TF tree";
+                float check_text_width = ImGui::CalcTextSize(check_tf_text).x;
+                ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - check_text_width) * 0.5f);
+                ImGui::Text("%s", check_tf_text);
+
                 ImGui::PopStyleColor();
             }
 
-            ImGui::PopStyleVar(); // SelectableTextAlign
             ImGui::EndChild();
-            ImGui::PopStyleVar(2);   // Child rounding and border
-            ImGui::PopStyleColor(2); // Child colors
-
-            ImGui::Spacing();
-
-            // Action buttons at bottom
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            // Reset TF button
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.4f, 0.2f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.5f, 0.3f, 0.9f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.6f, 0.4f, 1.0f));
-            if (ImGui::Button("🔄 Reset TF Buffer", ImVec2(150, 28)))
-            {
-                resetTFBuffer();
-                std::cout << "🔄 TF Buffer reset" << std::endl;
-            }
-            ImGui::PopStyleColor(3);
-
-            ImGui::SameLine();
-
-            // Close button
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.5f, 0.5f, 0.6f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.6f, 0.6f, 0.6f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-            if (ImGui::Button("✕ Close", ImVec2(80, 28)))
-            {
-                show_frames_popup_ = false;
-            }
-            ImGui::PopStyleColor(3);
-
-            // Frame count info at bottom right
-            ImGui::SameLine();
-            ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - 120.0f);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-            ImGui::Text("TF Frames: %zu", frame_transforms_.size());
-            ImGui::PopStyleColor();
+            ImGui::PopStyleVar(5);   // Child styling
+            ImGui::PopStyleColor(5); // Child and scrollbar colors
         }
         ImGui::End();
 
         // Pop all style modifications
         ImGui::PopStyleColor(4);
         ImGui::PopStyleVar(5);
+    }
+    void drawModelsPopup()
+    {
+        static int selected_mode = 0; // 0=robot, 1=point cloud, 2=lanelet
+
+        // Robot loading static variables
+        static char filepath_glb[256] = "";
+        static int selected_robot_frame = 0;
+
+        // Point Cloud loading static variables
+        static char pcd_path[256] = "";
+        static int selected_pcd_frame = 0;
+
+        // Lanelet loading static variables
+        static bool show_load_input_lanelet_map = false;
+        static char laneletmap_path[256] = "";
+        static bool show_load_input_map_element = false;
+        static char meshmap_path[256] = "";
+
+        if (!show_models_popup_)
+            return;
+
+        ImGuiViewport *viewport = ImGui::GetMainViewport();
+        ImVec2 viewport_size = viewport->Size;
+
+        // Calculate dock position (same as in drawMacOSDock)
+        const float dock_height = 80.0f;
+        const float icon_size = 50.0f;
+        const float icon_spacing = 15.0f;
+        const float dock_padding = 15.0f;
+        const float perf_panel_width = 200.0f;
+        const float panel_spacing = 20.0f;
+
+        float dock_width = (icon_size * dock_icons_.size()) + (icon_spacing * (dock_icons_.size() - 1)) + (dock_padding * 2);
+        float total_width = dock_width + panel_spacing + perf_panel_width;
+
+        ImVec2 dock_pos = ImVec2(
+            (viewport_size.x - total_width) * 0.5f,
+            viewport_size.y - dock_height - 20.0f);
+
+        // Popup dimensions
+        const float popup_width = 300.0f;
+        const float popup_height = 200.0f;
+        const float popup_margin = 10.0f;
+
+        // Mini dock dimensions
+        const float mini_icon_size = 35.0f;
+        const float mini_icon_spacing = 5.0f;
+        const float mini_dock_padding = 8.0f;
+        const int num_items = 4;
+        const float mini_dock_height = mini_icon_size + (mini_dock_padding * 2);
+        const float mini_dock_width = (mini_icon_size * num_items) + (mini_icon_spacing * (num_items - 1)) + (mini_dock_padding * 2);
+        const float mini_dock_margin = 8.0f;
+
+        // Position popup above the dock, aligned with dock start
+        ImVec2 popup_pos = ImVec2(
+            dock_pos.x - dock_padding,
+            dock_pos.y - popup_height - popup_margin);
+
+        // Position mini dock above and to the left of the popup
+        ImVec2 mini_dock_pos = ImVec2(
+            popup_pos.x,
+            popup_pos.y - mini_dock_height - mini_dock_margin);
+
+        // === DRAW MINI DOCK FIRST (OUTSIDE POPUP) ===
+        // Use background draw list instead of foreground to avoid z-order issues
+        ImDrawList *background_draw_list = ImGui::GetBackgroundDrawList();
+
+        // Mini dock background
+        ImVec2 mini_dock_min = mini_dock_pos;
+        ImVec2 mini_dock_max = ImVec2(mini_dock_pos.x + mini_dock_width, mini_dock_pos.y + mini_dock_height);
+
+        background_draw_list->AddRectFilled(mini_dock_min, mini_dock_max, IM_COL32(25, 25, 25, 240), 12.0f);
+        background_draw_list->AddRect(mini_dock_min, mini_dock_max, IM_COL32(60, 60, 60, 200), 12.0f, 0, 1.0f);
+
+        // Mode names and icons
+        const char *mode_names[] = {"Robot", "Point Cloud", "Lanelet", "Map"};
+        const char *mode_icons[] = {"🤖", "☁️", "🛣️", "🗺️"};
+
+        for (int i = 0; i < num_items; i++)
+        {
+            bool is_selected = (selected_mode == i);
+
+            // Calculate position for this icon
+            float icon_x = mini_dock_pos.x + mini_dock_padding + (i * (mini_icon_size + mini_icon_spacing));
+            float icon_y = mini_dock_pos.y + mini_dock_padding;
+
+            ImVec2 icon_min = ImVec2(icon_x, icon_y);
+            ImVec2 icon_max = ImVec2(icon_x + mini_icon_size, icon_y + mini_icon_size);
+
+            // Draw icon background
+            ImU32 bg_color = is_selected ? IM_COL32(70, 130, 180, 220) : IM_COL32(50, 50, 50, 160);
+            background_draw_list->AddRectFilled(icon_min, icon_max, bg_color, 8.0f);
+
+            // Draw icon border
+            if (is_selected)
+            {
+                background_draw_list->AddRect(icon_min, icon_max, IM_COL32(100, 150, 200, 255), 8.0f, 0, 2.0f);
+            }
+            else
+            {
+                background_draw_list->AddRect(icon_min, icon_max, IM_COL32(80, 80, 80, 150), 8.0f, 0, 1.0f);
+            }
+
+            // Calculate text position (centered in icon)
+            ImVec2 text_size = ImGui::CalcTextSize(mode_icons[i]);
+            ImVec2 text_pos = ImVec2(
+                icon_x + (mini_icon_size - text_size.x) * 0.5f,
+                icon_y + (mini_icon_size - text_size.y) * 0.5f);
+
+            // Draw the icon
+            background_draw_list->AddText(text_pos, IM_COL32(255, 255, 255, 255), mode_icons[i]);
+
+            // Check for click
+            ImVec2 mouse_pos = ImGui::GetMousePos();
+            if (ImGui::IsMouseClicked(0) &&
+                mouse_pos.x >= icon_min.x && mouse_pos.x <= icon_max.x &&
+                mouse_pos.y >= icon_min.y && mouse_pos.y <= icon_max.y)
+            {
+                selected_mode = i;
+                std::cout << "Selected mode: " << mode_names[i] << std::endl;
+            }
+
+            // Hover effect
+            bool is_hovered = mouse_pos.x >= icon_min.x && mouse_pos.x <= icon_max.x &&
+                              mouse_pos.y >= icon_min.y && mouse_pos.y <= icon_max.y;
+
+            if (is_hovered && !is_selected)
+            {
+                background_draw_list->AddRect(icon_min, icon_max, IM_COL32(120, 120, 120, 200), 8.0f, 0, 1.5f);
+            }
+        }
+
+        // Apply dock-style theming for popup
+        const float window_rounding = 20.0f;
+        const float child_rounding = window_rounding + 5.0f;
+
+        // Define consistent background color
+        ImVec4 popup_bg_color = ImVec4(0.1f, 0.1f, 0.1f, 0.95f);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, window_rounding);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+
+        // Elegant dark theme with subtle transparency
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, popup_bg_color);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, popup_bg_color);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
+
+        // Set fixed position and size
+        ImGui::SetNextWindowPos(popup_pos);
+        ImGui::SetNextWindowSize(ImVec2(popup_width, popup_height));
+
+        ImGuiWindowFlags popup_flags =
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoSavedSettings;
+
+        // IMPORTANT: Use a boolean variable to track if we need to clean up
+        bool popup_opened = ImGui::Begin("##ModelsPopup", &show_models_popup_, popup_flags);
+
+        if (popup_opened)
+        {
+            // === CUSTOM HEADER WITH BACKGROUND ===
+            ImVec2 window_pos = ImGui::GetWindowPos();
+            ImVec2 window_size = ImGui::GetWindowSize();
+            ImDrawList *draw_list = ImGui::GetWindowDrawList();
+
+            // Header dimensions
+            const float header_height = 40.0f;
+            const float header_padding_y = 10.0f;
+            const float header_padding_x = 15.0f;
+
+            // Draw header background rectangle with rounded top corners
+            ImVec2 header_min = ImVec2(window_pos.x, window_pos.y);
+            ImVec2 header_max = ImVec2(window_pos.x + window_size.x, window_pos.y + header_height);
+
+            draw_list->AddRectFilled(
+                header_min,
+                header_max,
+                IM_COL32(255, 255, 255, 30),
+                window_rounding,
+                ImDrawFlags_RoundCornersTop);
+
+            // Add subtle border at bottom of header
+            draw_list->AddLine(
+                ImVec2(header_min.x, header_max.y),
+                ImVec2(header_max.x, header_max.y),
+                IM_COL32(50, 50, 50, 255), 1.0f);
+
+            // Set cursor position for header content
+            ImGui::SetCursorPosY(header_padding_y);
+            ImGui::SetCursorPosX(header_padding_x);
+
+            // Header text showing selected mode
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
+            ImGui::Text("Load %s", mode_names[selected_mode]);
+            ImGui::PopStyleColor();
+
+            // === CONTENT AREA ===
+
+            float content_padding_x = 20.0f;
+            float content_padding_y = 15.0f;
+
+            // Position the content area with padding
+            ImGui::SetCursorPosX(content_padding_x);
+            ImGui::SetCursorPosY(header_height + content_padding_y);
+
+            // Calculate content area dimensions (subtract padding from both sides)
+            float content_width = window_size.x - (content_padding_x * 2);
+            float content_height = window_size.y - header_height - (content_padding_y * 2);
+
+            // Create content area with no automatic padding (we position it manually)
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, popup_bg_color);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, child_rounding);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f)); // Internal padding
+
+            bool child_opened = ImGui::BeginChild("ModelsContent", ImVec2(content_width, content_height), false);
+
+            if (child_opened)
+            {
+                // Show content based on selected mode
+                if (selected_mode == 0) // Robot mode
+                {
+                    // File input section with gray background
+                    ImGui::Text("Model File:");
+
+                    // Gray background for input text
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));       // Dark gray background
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));   // Lighter gray on hover
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f)); // Even lighter when active
+
+                    ImGui::SetNextItemWidth(-1);
+                    ImGui::InputText("##filepath", filepath_glb, sizeof(filepath_glb));
+
+                    ImGui::PopStyleColor(3); // Pop the gray colors
+
+                    ImGui::Spacing();
+
+                    // Frame selection section with load button on the right
+                    ImGui::Text("Assign to TF frame:");
+
+                    bool has_frames = !available_frames_.empty();
+                    const char *preview = has_frames ? available_frames_[selected_robot_frame].c_str() : "(map)";
+
+                    // Load button size (same as dock icon)
+                    const float load_button_size = 40.0f;
+                    const float spacing = 8.0f; // Space between combo and button
+
+                    // Calculate available width for the combo box
+                    float available_content_width = ImGui::GetContentRegionAvail().x;
+                    float combo_width = available_content_width - load_button_size - spacing;
+
+                    bool can_load = strlen(filepath_glb) > 0;
+
+                    if (has_frames)
+                    {
+                        // Gray styling for combo box (same as input text)
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));       // Dark gray background
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));   // Lighter gray on hover
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f)); // Even lighter when active
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));        // Button part of combo
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));    // Button hover
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));  // Button active
+
+                        ImGui::SetNextItemWidth(combo_width);
+                        if (ImGui::BeginCombo("##robot_frames", preview))
+                        {
+                            for (int i = 0; i < (int)available_frames_.size(); ++i)
+                            {
+                                bool is_selected = (selected_robot_frame == i);
+                                if (ImGui::Selectable(available_frames_[i].c_str(), is_selected))
+                                    selected_robot_frame = i;
+                                if (is_selected)
+                                    ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        ImGui::PopStyleColor(6); // Pop the gray combo colors
+                    }
+                    else
+                    {
+                        // Create a disabled text box that looks like a combo box
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.2f, 0.2f, 0.2f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+                        ImGui::SetNextItemWidth(combo_width);
+                        char disabled_text[] = "No TF frames (using default)";
+                        ImGui::InputText("##disabled_frames", disabled_text, sizeof(disabled_text), ImGuiInputTextFlags_ReadOnly);
+                        ImGui::PopStyleColor(2);
+                    }
+
+                    // Load button on the same line (right side)
+                    ImGui::SameLine();
+
+                    // Style the load button with dock-like colors
+                    if (!can_load)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+                    }
+                    else
+                    {
+                        // Dock-style colors for enabled button
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.27f, 0.51f, 0.71f, 1.0f));        // Steel blue
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.35f, 0.67f, 0.90f, 1.0f)); // Light blue on hover
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.31f, 0.63f, 0.86f, 1.0f));  // Medium blue on click
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));             // White text
+                    }
+
+                    if (ImGui::Button("🚀", ImVec2(load_button_size, load_button_size)) && can_load)
+                    {
+                        try
+                        {
+                            if (mesh_glb_loaded)
+                            {
+                                glBindVertexArray(0);
+                                glUseProgram(0);
+                                model_upload_.cleanupMesh(loaded_mesh_glb);
+                                mesh_glb_loaded = false;
+                            }
+
+                            loaded_mesh_glb = model_upload_.loadModel(filepath_glb);
+                            mesh_glb_loaded = true;
+
+                            const std::string frame_id = has_frames ? available_frames_[selected_robot_frame] : "map";
+                            loaded_mesh_glb.frame_id = frame_id;
+
+                            std::cout << "Loaded robot mesh from: " << filepath_glb
+                                      << " into frame: " << frame_id << " with type: " << loaded_mesh_glb.type
+                                      << std::endl;
+
+                            show_models_popup_ = false;
+                        }
+                        catch (const std::exception &e)
+                        {
+                            std::cerr << "GLB load error: " << e.what() << std::endl;
+                        }
+                    }
+
+                    ImGui::PopStyleColor(4);
+
+                    // Tooltip for load button
+                    if (ImGui::IsItemHovered())
+                    {
+                        if (can_load)
+                        {
+                            ImGui::SetTooltip("Load Model");
+                        }
+                        else
+                        {
+                            ImGui::SetTooltip("Select a file first");
+                        }
+                    }
+                }
+                else if (selected_mode == 1) // Point Cloud mode
+                {
+                    // Point Cloud loading static variables (add these at the top with other statics)
+                    static char pcd_path[256] = "";
+                    static int selected_pcd_frame = 0;
+
+                    // File input section with gray background
+                    ImGui::Text("PCD File:");
+
+                    // Gray background for input text (same style as robot mode)
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));       // Dark gray background
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));   // Lighter gray on hover
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f)); // Even lighter when active
+
+                    ImGui::SetNextItemWidth(-1);
+                    ImGui::InputText("##pcd_path", pcd_path, sizeof(pcd_path));
+
+                    ImGui::PopStyleColor(3); // Pop the gray colors
+
+                    ImGui::Spacing();
+
+                    // Frame selection section with load button on the right
+                    ImGui::Text("Assign to TF frame:");
+
+                    bool has_frames = !available_frames_.empty();
+                    const char *preview = has_frames ? available_frames_[selected_pcd_frame].c_str() : "(map)";
+
+                    // Load button size (same as robot mode)
+                    const float load_button_size = 40.0f;
+                    const float spacing = 8.0f; // Space between combo and button
+
+                    // Calculate available width for the combo box
+                    float available_content_width = ImGui::GetContentRegionAvail().x;
+                    float combo_width = available_content_width - load_button_size - spacing;
+
+                    bool can_load = strlen(pcd_path) > 0;
+
+                    if (has_frames)
+                    {
+                        // Gray styling for combo box (same as input text)
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));       // Dark gray background
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));   // Lighter gray on hover
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f)); // Even lighter when active
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));        // Button part of combo
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));    // Button hover
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));  // Button active
+
+                        ImGui::SetNextItemWidth(combo_width);
+                        if (ImGui::BeginCombo("##pcd_frames", preview))
+                        {
+                            for (int i = 0; i < (int)available_frames_.size(); ++i)
+                            {
+                                bool is_selected = (selected_pcd_frame == i);
+                                if (ImGui::Selectable(available_frames_[i].c_str(), is_selected))
+                                {
+                                    selected_pcd_frame = i;
+                                    pcd_frame = available_frames_[i]; // Update the pcd_frame variable
+                                }
+                                if (is_selected)
+                                    ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        ImGui::PopStyleColor(6); // Pop the gray combo colors
+                    }
+                    else
+                    {
+                        // Create a disabled text box that looks like a combo box
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.2f, 0.2f, 0.2f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+                        ImGui::SetNextItemWidth(combo_width);
+                        char disabled_text[] = "No TF frames (using default)";
+                        ImGui::InputText("##disabled_frames", disabled_text, sizeof(disabled_text), ImGuiInputTextFlags_ReadOnly);
+                        ImGui::PopStyleColor(2);
+                    }
+
+                    // Load button on the same line (right side)
+                    ImGui::SameLine();
+
+                    // Style the load button with point cloud theme colors
+                    if (!can_load)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+                    }
+                    else
+                    {
+                        // Point cloud theme colors (light blue)
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.8f, 1.0f, 0.8f));         // Light blue
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.85f, 1.0f, 0.9f)); // Lighter blue on hover
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.65f, 0.82f, 1.0f, 0.9f)); // Medium blue on click
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));           // Dark text
+                    }
+
+                    if (ImGui::Button("☁️", ImVec2(load_button_size, load_button_size)) && can_load)
+                    {
+                        try
+                        {
+                            // Load the point cloud
+                            pcd_loader_.PointCloudBuffer(pcd_path, pcd_frame, false);
+
+                            std::cout << "Loaded point cloud from: " << pcd_path;
+                            if (has_frames)
+                            {
+                                std::cout << " into frame: " << available_frames_[selected_pcd_frame];
+                            }
+                            else
+                            {
+                                std::cout << " into default frame";
+                            }
+                            std::cout << std::endl;
+
+                            show_models_popup_ = false;
+                        }
+                        catch (const std::exception &e)
+                        {
+                            std::cerr << "PCD load error: " << e.what() << std::endl;
+                        }
+                    }
+
+                    ImGui::PopStyleColor(4);
+
+                    // Tooltip for load button
+                    if (ImGui::IsItemHovered())
+                    {
+                        if (can_load)
+                        {
+                            ImGui::SetTooltip("Load Point Cloud");
+                        }
+                        else
+                        {
+                            ImGui::SetTooltip("Select a PCD file first");
+                        }
+                    }
+                }
+                else if (selected_mode == 2) // Map mode
+                {
+                    ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.6f, 1.0f), "Lanelet Loader");
+                    ImGui::Spacing();
+
+                    // Lanelet Map Loading Section
+                    if (ImGui::Button("Load Lanelet Map", ImVec2(-1, 0)))
+                    {
+                        show_load_input_lanelet_map = !show_load_input_lanelet_map;
+                    }
+
+                    if (show_load_input_lanelet_map)
+                    {
+                        ImGui::Spacing();
+                        ImGui::Text("Map File:");
+
+                        // Gray background for input text (same style as robot mode)
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+
+                        // Calculate available width for input and button
+                        const float ok_button_width = 50.0f;
+                        const float spacing = 8.0f;
+                        float available_content_width = ImGui::GetContentRegionAvail().x;
+                        float input_width = available_content_width - ok_button_width - spacing;
+
+                        ImGui::SetNextItemWidth(input_width);
+                        ImGui::InputText("##laneletmap_path", laneletmap_path, sizeof(laneletmap_path));
+                        ImGui::PopStyleColor(3);
+
+                        ImGui::SameLine();
+
+                        // OK button styling
+                        bool can_load_lanelet = strlen(laneletmap_path) > 0;
+                        if (!can_load_lanelet)
+                        {
+                            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+                        }
+                        else
+                        {
+                            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 1.0f, 0.6f, 0.8f));         // Green theme
+                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 1.0f, 0.7f, 0.9f));  // Lighter green on hover
+                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.85f, 1.0f, 0.65f, 0.9f)); // Medium green on click
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));           // Dark text
+                        }
+
+                        if (ImGui::Button("OK", ImVec2(ok_button_width, 0)) && can_load_lanelet)
+                        {
+                            // Load the lanelet map
+                            lanelet_loader_.loadLanelet2Map(laneletmap_path);
+                            show_load_input_lanelet_map = false;
+                        }
+                        ImGui::PopStyleColor(4);
+                    }
+                    else // map content
+                    {
+                        ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.6f, 1.0f), "Lanelet Loader");
+                        ImGui::Spacing();
+                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Coming Soon...");
+                    }
+                }
+            }
+
+            // ALWAYS call EndChild if BeginChild was called
+            ImGui::EndChild();
+
+            // Pop the child styles
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(1);
+        }
+
+        // ALWAYS call End if Begin was called
+        ImGui::End();
+
+        // Pop all style modifications
+        ImGui::PopStyleColor(4);
+        ImGui::PopStyleVar(5);
+    }
+
+    void closeAllPanelsExceptTopics()
+    {
+        // Close all panels except TOPICS
+        show_frames_popup_ = false;
+        show_files_popup_ = false;
+        show_models_popup_ = false;
+        show_settings_popup_ = false;
+        show_info_popup_ = false;
+        // Note: show_topics_popup_ is NOT included here
     }
 
 private:
@@ -2202,6 +2918,28 @@ private:
     PlyMesh loaded_mesh_glb;
     bool mesh_glb_loaded = false;
 
+    // === Mapbox integration state ===
+    std::unique_ptr<MapboxRenderer> mapbox_;
+    bool mapbox_enabled_ = false;
+
+    // User-configurable camera/state
+    std::string mapbox_token_ = "pk.eyJ1IjoiYXJtYWdlbmlzcyIsImEiOiJjbWRucWJ2enUwNHdwMm5wczE2YWU0ejZ4In0.lVcJwTwb-2n0yGo4bKeWEQ";
+    std::string map_style_ = "mapbox://styles/mapbox/basic-v9";
+    double map_lat_ = 37.7749, map_lon_ = -122.4194;
+    double map_zoom_ = 10.0, map_bearing_ = 0.0, map_pitch_ = 0.0;
+
+    // World placement (MapboxRenderer draws a textured quad in world space)
+    Eigen::Vector3f map_pos_{0.0f, 0.0f, -5.0f}; // slightly below grid
+    float map_size_ = 10.0f;                     // world units (meters in your scene)
+    float map_rotation_z_ = 0.0f;                // radians
+
+    // Render cadence
+    std::chrono::steady_clock::time_point last_mapbox_render_{};
+    std::chrono::milliseconds mapbox_update_period_{6000};
+
+    std::thread mapbox_thread_;
+    std::atomic<bool> mapbox_should_exit_{false};
+
     // Add these to your Ros2GLViewer class header (private section)
     enum class DockItem
     {
@@ -2225,12 +2963,12 @@ private:
     };
 
     std::vector<DockIcon> dock_icons_ = {
-        {"📡", "ROS2 Topics", DockItem::TOPICS, 0, "4.png"},
-        {"🔗", "TF Frames", DockItem::FRAMES, 0, "7.png"},
         {"📁", "Reset tf", DockItem::FILES, 0, "8.png"},
+        {"🔗", "TF Frames", DockItem::FRAMES, 0, "7.png"},
+        {"📡", "ROS2 Topics", DockItem::TOPICS, 0, "4.png"},
         {"🤖", "3D Models", DockItem::MODELS, 0, "5.png"},
         {"⚙️", "Lanelet", DockItem::SETTINGS, 0, "6.png"},
-        {"ℹ️", "Info", DockItem::INFO, 0, ""}};
+        {"ℹ️", "Info", DockItem::INFO, 0, "1.png"}};
 
     bool show_topics_popup_ = false;
     bool show_frames_popup_ = false;

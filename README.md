@@ -12,7 +12,9 @@ sudo apt update
 sudo apt install libfreetype6-dev
 sudo apt install libglfw3-dev libglew-dev libglm-dev libglu1-mesa-dev freeglut3-dev
 sudo apt-get install libassimp-dev
-
+sudo apt-get install libuv1-dev pkg-config
+sudo apt-get install libjpeg-dev libpng-dev libz-dev libcurl4-openssl-dev
+sudo apt-get install libicu-dev pkg-config
 
 cd /ros2-gl-viewer/third_party
 
@@ -35,6 +37,16 @@ wget https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
 
 cd /ros2-gl-viewer/third_party/gl3w
 python3 gl3w_gen.py
+
+git clone https://github.com/mapbox/mapbox-gl-native.git
+cd mapbox-gl-native
+git submodule update --init --recursive
+cmake . -B build
+cmake --build build
+
+
+
+MAPBOX_ACCESS_TOKEN=pk.eyJ1IjoiYXJtYWdlbmlzcyIsImEiOiJjbWRucWJ2enUwNHdwMm5wczE2YWU0ejZ4In0.lVcJwTwb-2n0yGo4bKeWES ./build/platform/glfw/mbgl-glfw
 
 cd /ros2-gl-viewer
 

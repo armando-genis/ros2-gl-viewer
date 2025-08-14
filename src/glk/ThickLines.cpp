@@ -34,7 +34,7 @@ void ThickLinesRenderer::drawCoordinateFrames(const Eigen::Matrix4f &view,
 
     // Early exit for excessive frames
     size_t total_frames = frame_transforms.size() + (fixed_frame.empty() ? 0 : 1);
-    if (total_frames > 50)
+    if (total_frames > 100)
     {
         std::cerr << "⚠️  Too many TF frames (" << total_frames << "), skipping render to prevent memory issues" << std::endl;
         return;

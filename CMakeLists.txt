@@ -15,6 +15,12 @@ find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(Freetype REQUIRED)
 find_package(GLUT   REQUIRED)
+find_package(JPEG REQUIRED)
+find_package(PNG REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ICU REQUIRED icu-uc icu-i18n)
+pkg_check_modules(LIBUV REQUIRED libuv)
 
 # ROS2 dependencies - without using ament
 find_package(rclcpp REQUIRED)
@@ -50,6 +56,64 @@ set(STB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 include_directories(${CGLTF_DIR})
 include_directories(${STB_DIR})
 
+# Mapbox GL Native - Use pre-built libraries
+set(MAPBOX_GL_NATIVE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mapbox-gl-native)
+set(MAPBOX_GL_NATIVE_BUILD_DIR ${MAPBOX_GL_NATIVE_DIR}/build)
+
+# Include Mapbox GL Native headers
+include_directories(${MAPBOX_GL_NATIVE_DIR}/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/platform/default/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/platform/default/include/mbgl/storage)
+
+# Include Mapbox vendor dependencies that are needed for headers
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/optional)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/variant/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/geometry.hpp/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/geojson.hpp/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/rapidjson/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/expected-lite/include)
+
+# Find Mapbox GL Native library and its vendor dependencies
+find_library(MAPBOX_CORE_LIB
+    NAMES mbgl-core
+    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
+    NO_DEFAULT_PATH
+)
+
+# Find Mapbox vendor libraries
+find_library(MAPBOX_CSSCOLORPARSER_LIB
+    NAMES mbgl-vendor-csscolorparser
+    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
+    NO_DEFAULT_PATH
+)
+
+find_library(MAPBOX_NUNICODE_LIB
+    NAMES mbgl-vendor-nunicode
+    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
+    NO_DEFAULT_PATH
+)
+
+find_library(MAPBOX_PARSEDATE_LIB
+    NAMES mbgl-vendor-parsedate
+    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
+    NO_DEFAULT_PATH
+)
+
+find_library(MAPBOX_SQLITE_LIB
+    NAMES mbgl-vendor-sqlite
+    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
+    NO_DEFAULT_PATH
+)
+
+# Check if library was found
+if(NOT MAPBOX_CORE_LIB)
+    message(FATAL_ERROR "Mapbox GL Native core library not found in ${MAPBOX_GL_NATIVE_BUILD_DIR}")
+endif()
+
+message(STATUS "Found Mapbox GL Native: ${MAPBOX_CORE_LIB}")
+
+
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -78,7 +142,8 @@ set(GLK_SOURCES
   src/glk/PclLoader.cpp
   src/glk/modelUpload.cpp
   src/glk/LaneletLoader.cpp
-  # src/glk/ThickLines.cpp
+  src/glk/ThickLines.cpp
+  src/glk/MapboxRenderer.cpp
 )
 
 # List all source files in guik directory
@@ -110,6 +175,11 @@ target_compile_definitions(pointcloud_viewer PRIVATE
     # STB_IMAGE_IMPLEMENTATION
 )
 
+target_include_directories(pointcloud_viewer PRIVATE
+  ${LIBUV_INCLUDE_DIRS}
+)
+
+
 # Link libraries
 target_link_libraries(pointcloud_viewer
   ${OPENGL_LIBRARIES}
@@ -130,6 +200,23 @@ target_link_libraries(pointcloud_viewer
   lanelet2_routing
   lanelet2_validation
   ${GLUT_LIBRARY}
+  # Mapbox GL Native libraries
+  ${MAPBOX_CORE_LIB}
+  ${MAPBOX_CSSCOLORPARSER_LIB}
+  ${MAPBOX_NUNICODE_LIB}
+  ${MAPBOX_PARSEDATE_LIB}
+  ${MAPBOX_SQLITE_LIB}
+
+  ${LIBUV_LIBRARIES}
+  # System dependencies for Mapbox
+  ${JPEG_LIBRARIES}
+  ${PNG_LIBRARIES}
+  ${ZLIB_LIBRARIES}
+  ${ICU_LIBRARIES}
+  curl
+  GL
+  pthread
+  m
 )
 
 
@@ -152,3 +239,4 @@ add_custom_command(TARGET pointcloud_viewer POST_BUILD
 install(TARGETS pointcloud_viewer
   RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
 )
+
