@@ -86,6 +86,8 @@ Found frame: 'vectornav' with parent: 'base_link'
 
 /workspace/oms/open_house_v2.osm
 
+/workspace/oms/map_homework.osm
+
 /workspace/models/LOAM/cloudGlobal.pcd
 
 /workspace/models/sdv.glb

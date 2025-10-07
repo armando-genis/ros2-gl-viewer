@@ -28,6 +28,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <nav_msgs/msg/path.hpp>
 
 // Eigen
 #include <Eigen/Core>
@@ -100,6 +101,29 @@ struct MarkerArrayTopic
     visualization_msgs::msg::MarkerArray::SharedPtr marker_array;
     Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
     std::chrono::steady_clock::time_point last_update;
+};
+
+struct PathTopic
+{
+    std::string topic_name;
+    std::string frame_id;
+    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub;
+    nav_msgs::msg::Path::SharedPtr path;
+    Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
+    std::chrono::steady_clock::time_point last_update;
+    
+    // Path type: 0 = normal line, 1 = car path (ribbon with width)
+    int path_type = 0;
+    float path_width = 1.5f; // Width in meters for car path
+    
+    // Color mode for car path: 0 = flat color, 1 = gradient (center to edges), 2 = gradient (edges to center)
+    int color_mode = 0;
+    
+    // OpenGL resources for rendering the path
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLuint color_vbo = 0; // Separate VBO for vertex colors (gradient mode)
+    size_t num_points = 0;
 };
 
 class Ros2GLViewer : public guik::Application
@@ -708,6 +732,8 @@ public:
                             type_short = "NavSatFix";
                         } else if (type_short.find("visualization_msgs/msg/MarkerArray") != std::string::npos) {
                             type_short = "MarkerArray";
+                        } else if (type_short.find("nav_msgs/msg/Path") != std::string::npos) {
+                            type_short = "Path";
                         } else if (type_short.find("geometry_msgs/msg/PoseStamped") != std::string::npos) {
                             type_short = "PoseStamped";
                         } else if (type_short.find("nav_msgs/msg/OccupancyGrid") != std::string::npos) {
@@ -748,6 +774,9 @@ public:
                 } else if (topic_type.find("visualization_msgs/msg/MarkerArray") != std::string::npos) {
                     button_text = "+ Add MarkerArray";
                     action_type = "markerarray";
+                } else if (topic_type.find("nav_msgs/msg/Path") != std::string::npos) {
+                    button_text = "+ Add Path";
+                    action_type = "path";
                 } else if (topic_type.find("geometry_msgs/msg/PoseStamped") != std::string::npos) {
                     button_text = "+ Add Pose";
                     action_type = "pose";
@@ -761,7 +790,31 @@ public:
                 
                 ImGui::Text("Subscribe to: %s", selected_topic.c_str());
                 ImGui::Text("Type: %s", topic_type.c_str());
-                ImGui::SameLine();
+                
+                // Special UI for Path topics - allow selecting path type and color mode
+                static int path_type_selection = 0; // 0 = normal line, 1 = car path
+                static int path_color_mode = 0; // 0 = flat, 1 = gradient
+                if (action_type == "path") {
+                    ImGui::Separator();
+                    ImGui::Text("Path Visualization Type:");
+                    ImGui::RadioButton("Normal Path (Line)", &path_type_selection, 0);
+                    ImGui::SameLine();
+                    ImGui::RadioButton("Car Path (1.5m width)", &path_type_selection, 1);
+                    
+                    // Show color mode options only for car path
+                    if (path_type_selection == 1) {
+                        ImGui::Separator();
+                        ImGui::Text("Car Path Color Mode:");
+                        ImGui::RadioButton("Flat Color", &path_color_mode, 0);
+                        ImGui::SameLine();
+                        ImGui::RadioButton("Gradient (Center → Edges)", &path_color_mode, 1);
+                        ImGui::SameLine();
+                        ImGui::RadioButton("Gradient (Edges → Center)", &path_color_mode, 2);
+                        ImGui::Text("  Mode 1: solid at center, transparent at edges");
+                        ImGui::Text("  Mode 2: solid at edges, transparent at center");
+                    }
+                }
+                
                 if (ImGui::Button(button_text.c_str()))
                 {
                     std::cout << green << "Adding subscription for topic: " << selected_topic 
@@ -774,6 +827,8 @@ public:
                         addGPSTopic(selected_topic);
                     } else if (action_type == "markerarray") {
                         addMarkerArrayTopic(selected_topic);
+                    } else if (action_type == "path") {
+                        addPathTopic(selected_topic, path_type_selection, path_color_mode);
                     } else if (action_type == "pose") {
                         // addPoseTopic(selected_topic);
                     } else if (action_type == "occupancygrid") {
@@ -786,8 +841,13 @@ public:
                 if (ImGui::Button("- Remove"))
                 {
                     std::cout << red << "Removing topic: " << selected_topic << reset << std::endl;
+                    
+                    // Try to remove from all subscription types
                     removePointCloudTopic(selected_topic);
-                    // removeMarkerArrayTopic(selected_topic);
+                    removeMarkerArrayTopic(selected_topic);
+                    removePathTopic(selected_topic);
+                    // removeGPSTopic(selected_topic); // GPS is handled separately
+                    
                     selected_topic_idx_ = -1;
                 }
             }
@@ -804,6 +864,38 @@ public:
                 {
                     ImGui::Text("  • %s (%zu markers)", mt->topic_name.c_str(), 
                                mt->marker_array ? mt->marker_array->markers.size() : 0);
+                }
+            }
+        }
+
+        // Show currently subscribed path topics
+        {
+            std::lock_guard lk(path_topics_mutex_);
+            if (!path_topics_.empty())
+            {
+                ImGui::Separator();
+                ImGui::Text("Subscribed Path Topics:");
+                for (const auto &pt : path_topics_)
+                {
+                    const char* type_str = (pt->path_type == 0) ? "Line" : "Car (1.5m)";
+                    const char* color_str;
+                    if (pt->color_mode == 0) {
+                        color_str = "Flat";
+                    } else if (pt->color_mode == 1) {
+                        color_str = "Grad(C→E)";
+                    } else {
+                        color_str = "Grad(E→C)";
+                    }
+                    
+                    if (pt->path_type == 0) {
+                        // Normal path - don't show color mode
+                        ImGui::Text("  • %s (%zu poses) [%s]", pt->topic_name.c_str(), 
+                                   pt->path ? pt->path->poses.size() : 0, type_str);
+                    } else {
+                        // Car path - show color mode
+                        ImGui::Text("  • %s (%zu poses) [%s, %s]", pt->topic_name.c_str(), 
+                                   pt->path ? pt->path->poses.size() : 0, type_str, color_str);
+                    }
                 }
             }
         }
@@ -1149,6 +1241,411 @@ public:
             lanelet_loader_.crosswalks(shader);
             lanelet_loader_.stripes(shader);
         }
+        // ============================================
+        // render path topics
+        // ============================================
+        {
+            std::lock_guard lk(path_topics_mutex_);
+            shader.set_uniform("color_mode", 1);  // Use flat color mode
+            
+            for (auto &pt : path_topics_)
+            {
+                if (!pt->path || pt->path->poses.empty())
+                    continue;
+                
+                size_t n = pt->path->poses.size();
+                
+                // Create/update VAO and VBO for the path
+                if (pt->vao == 0) {
+                    glGenVertexArrays(1, &pt->vao);
+                    glGenBuffers(1, &pt->vbo);
+                }
+                
+                shader.set_uniform("model_matrix", pt->transform.matrix());
+                
+                if (pt->path_type == 0) {
+                    // ========== NORMAL PATH (LINE) ==========
+                    std::vector<Eigen::Vector3f> path_points;
+                    path_points.reserve(n);
+                    for (const auto &pose : pt->path->poses) {
+                        path_points.emplace_back(
+                            pose.pose.position.x,
+                            pose.pose.position.y,
+                            pose.pose.position.z
+                        );
+                    }
+                    
+                    // Upload to GPU
+                    glBindVertexArray(pt->vao);
+                    glBindBuffer(GL_ARRAY_BUFFER, pt->vbo);
+                    glBufferData(GL_ARRAY_BUFFER, 
+                               path_points.size() * sizeof(Eigen::Vector3f),
+                               path_points.data(), 
+                               GL_DYNAMIC_DRAW);
+                    
+                    // Setup vertex attributes
+                    glEnableVertexAttribArray(0);
+                    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
+                                        sizeof(Eigen::Vector3f), (void*)0);
+                    
+                    shader.set_uniform("material_color", Eigen::Vector4f(0.0f, 1.0f, 1.0f, 1.0f)); // Cyan
+                    
+                    glLineWidth(3.0f);
+                    glDrawArrays(GL_LINE_STRIP, 0, GLsizei(n));
+                    glLineWidth(1.0f);
+                    
+                    glBindVertexArray(0);
+                    glBindBuffer(GL_ARRAY_BUFFER, 0);
+                    
+                } else {
+                    // ========== CAR PATH (RIBBON WITH WIDTH) ==========
+                    float half_width = pt->path_width / 2.0f; // 0.75m to each side
+                    
+                    if (pt->color_mode == 0) {
+                        // ===== FLAT COLOR MODE =====
+                        std::vector<Eigen::Vector3f> ribbon_vertices;
+                        ribbon_vertices.reserve(n * 2); // 2 vertices per pose (left and right)
+                        
+                        for (size_t i = 0; i < n; ++i) {
+                            const auto &pose = pt->path->poses[i];
+                            
+                            // Get position
+                            Eigen::Vector3f pos(
+                                pose.pose.position.x,
+                                pose.pose.position.y,
+                                pose.pose.position.z
+                            );
+                            
+                            // Calculate forward direction
+                            Eigen::Vector3f forward;
+                            if (i < n - 1) {
+                                const auto &next_pose = pt->path->poses[i + 1];
+                                forward = Eigen::Vector3f(
+                                    next_pose.pose.position.x - pose.pose.position.x,
+                                    next_pose.pose.position.y - pose.pose.position.y,
+                                    next_pose.pose.position.z - pose.pose.position.z
+                                );
+                            } else {
+                                const auto &prev_pose = pt->path->poses[i - 1];
+                                forward = Eigen::Vector3f(
+                                    pose.pose.position.x - prev_pose.pose.position.x,
+                                    pose.pose.position.y - prev_pose.pose.position.y,
+                                    pose.pose.position.z - prev_pose.pose.position.z
+                                );
+                            }
+                            forward.normalize();
+                            
+                            // Calculate perpendicular (right) direction
+                            Eigen::Vector3f right(-forward.y(), forward.x(), 0.0f);
+                            right.normalize();
+                            
+                            // Create left and right vertices
+                            ribbon_vertices.push_back(pos - right * half_width);
+                            ribbon_vertices.push_back(pos + right * half_width);
+                        }
+                        
+                        // Upload to GPU
+                        glBindVertexArray(pt->vao);
+                        glBindBuffer(GL_ARRAY_BUFFER, pt->vbo);
+                        glBufferData(GL_ARRAY_BUFFER, 
+                                   ribbon_vertices.size() * sizeof(Eigen::Vector3f),
+                                   ribbon_vertices.data(), 
+                                   GL_DYNAMIC_DRAW);
+                        
+                        glEnableVertexAttribArray(0);
+                        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
+                                            sizeof(Eigen::Vector3f), (void*)0);
+                        
+                        shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 0.5f, 0.0f, 0.8f));
+                        
+                        glDrawArrays(GL_TRIANGLE_STRIP, 0, GLsizei(ribbon_vertices.size()));
+                        
+                        glBindVertexArray(0);
+                        
+                    } else if (pt->color_mode == 1) {
+                        // ===== GRADIENT MODE 1 (center solid → edges transparent) =====
+                        // Create smooth gradient ribbon using multiple segments across width
+                        const int gradient_segments = 16; // More segments = smoother gradient
+                        std::vector<Eigen::Vector3f> ribbon_vertices;
+                        std::vector<Eigen::Vector4f> vertex_colors;
+                        std::vector<GLuint> indices;
+                        
+                        // Reserve space
+                        ribbon_vertices.reserve(n * gradient_segments);
+                        vertex_colors.reserve(n * gradient_segments);
+                        indices.reserve((n - 1) * gradient_segments * 6); // 2 triangles per quad
+                        
+                        // Create vertices for each pose
+                        for (size_t i = 0; i < n; ++i) {
+                            const auto &pose = pt->path->poses[i];
+                            
+                            Eigen::Vector3f pos(
+                                pose.pose.position.x,
+                                pose.pose.position.y,
+                                pose.pose.position.z
+                            );
+                            
+                            // Calculate forward direction
+                            Eigen::Vector3f forward;
+                            if (i < n - 1) {
+                                const auto &next_pose = pt->path->poses[i + 1];
+                                forward = Eigen::Vector3f(
+                                    next_pose.pose.position.x - pose.pose.position.x,
+                                    next_pose.pose.position.y - pose.pose.position.y,
+                                    next_pose.pose.position.z - pose.pose.position.z
+                                );
+                            } else {
+                                const auto &prev_pose = pt->path->poses[i - 1];
+                                forward = Eigen::Vector3f(
+                                    pose.pose.position.x - prev_pose.pose.position.x,
+                                    pose.pose.position.y - prev_pose.pose.position.y,
+                                    pose.pose.position.z - prev_pose.pose.position.z
+                                );
+                            }
+                            forward.normalize();
+                            
+                            Eigen::Vector3f right(-forward.y(), forward.x(), 0.0f);
+                            right.normalize();
+                            
+                            // Create gradient segments across the width
+                            for (int seg = 0; seg < gradient_segments; ++seg) {
+                                float t = float(seg) / float(gradient_segments - 1); // 0 to 1
+                                float offset = (t - 0.5f) * pt->path_width; // -half_width to +half_width
+                                
+                                Eigen::Vector3f vertex = pos + right * offset;
+                                ribbon_vertices.push_back(vertex);
+                                
+                                // Calculate alpha based on distance from center
+                                float distance_from_center = std::abs(offset) / half_width; // 0 to 1
+                                float alpha = 1.0f - distance_from_center; // 1 at center, 0 at edges
+                                alpha = std::max(0.0f, alpha); // Clamp to 0
+                                
+                                Eigen::Vector4f color(1.0f, 0.5f, 0.0f, alpha);
+                                vertex_colors.push_back(color);
+                            }
+                        }
+                        
+                        // Create indices for triangle strips (quads)
+                        for (size_t i = 0; i < n - 1; ++i) {
+                            for (int seg = 0; seg < gradient_segments - 1; ++seg) {
+                                // Current row indices
+                                GLuint curr_left = i * gradient_segments + seg;
+                                GLuint curr_right = i * gradient_segments + seg + 1;
+                                
+                                // Next row indices
+                                GLuint next_left = (i + 1) * gradient_segments + seg;
+                                GLuint next_right = (i + 1) * gradient_segments + seg + 1;
+                                
+                                // Create two triangles for each quad
+                                indices.push_back(curr_left);
+                                indices.push_back(curr_right);
+                                indices.push_back(next_left);
+                                
+                                indices.push_back(curr_right);
+                                indices.push_back(next_right);
+                                indices.push_back(next_left);
+                            }
+                        }
+                        
+                        // Create color VBO if not exists
+                        if (pt->color_vbo == 0) {
+                            glGenBuffers(1, &pt->color_vbo);
+                        }
+                        
+                        // Upload vertices
+                        glBindVertexArray(pt->vao);
+                        glBindBuffer(GL_ARRAY_BUFFER, pt->vbo);
+                        glBufferData(GL_ARRAY_BUFFER, 
+                                   ribbon_vertices.size() * sizeof(Eigen::Vector3f),
+                                   ribbon_vertices.data(), 
+                                   GL_DYNAMIC_DRAW);
+                        
+                        glEnableVertexAttribArray(0);
+                        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
+                                            sizeof(Eigen::Vector3f), (void*)0);
+                        
+                        // Upload colors
+                        glBindBuffer(GL_ARRAY_BUFFER, pt->color_vbo);
+                        glBufferData(GL_ARRAY_BUFFER,
+                                   vertex_colors.size() * sizeof(Eigen::Vector4f),
+                                   vertex_colors.data(),
+                                   GL_DYNAMIC_DRAW);
+                        
+                        glEnableVertexAttribArray(1); // Assuming color is attribute 1
+                        glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE,
+                                            sizeof(Eigen::Vector4f), (void*)0);
+                        
+                        // Create index buffer
+                        GLuint ibo;
+                        glGenBuffers(1, &ibo);
+                        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+                        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 
+                                   indices.size() * sizeof(GLuint),
+                                   indices.data(), 
+                                   GL_STATIC_DRAW);
+                        
+                        // Use vertex color mode
+                        shader.set_uniform("color_mode", 2); // Vertex color mode
+                        
+                        // Enable blending for transparency
+                        glEnable(GL_BLEND);
+                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                        
+                        // Draw using indices
+                        glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
+                        
+                        glDisable(GL_BLEND);
+                        glDisableVertexAttribArray(1);
+                        glBindVertexArray(0);
+                        
+                        // Cleanup index buffer
+                        glDeleteBuffers(1, &ibo);
+                        
+                    } else {
+                        // ===== GRADIENT MODE 2 (edges solid → center transparent) =====
+                        // Create smooth gradient ribbon using multiple segments across width
+                        const int gradient_segments = 16; // More segments = smoother gradient
+                        std::vector<Eigen::Vector3f> ribbon_vertices;
+                        std::vector<Eigen::Vector4f> vertex_colors;
+                        std::vector<GLuint> indices;
+                        
+                        // Reserve space
+                        ribbon_vertices.reserve(n * gradient_segments);
+                        vertex_colors.reserve(n * gradient_segments);
+                        indices.reserve((n - 1) * gradient_segments * 6); // 2 triangles per quad
+                        
+                        // Create vertices for each pose
+                        for (size_t i = 0; i < n; ++i) {
+                            const auto &pose = pt->path->poses[i];
+                            
+                            Eigen::Vector3f pos(
+                                pose.pose.position.x,
+                                pose.pose.position.y,
+                                pose.pose.position.z
+                            );
+                            
+                            // Calculate forward direction
+                            Eigen::Vector3f forward;
+                            if (i < n - 1) {
+                                const auto &next_pose = pt->path->poses[i + 1];
+                                forward = Eigen::Vector3f(
+                                    next_pose.pose.position.x - pose.pose.position.x,
+                                    next_pose.pose.position.y - pose.pose.position.y,
+                                    next_pose.pose.position.z - pose.pose.position.z
+                                );
+                            } else {
+                                const auto &prev_pose = pt->path->poses[i - 1];
+                                forward = Eigen::Vector3f(
+                                    pose.pose.position.x - prev_pose.pose.position.x,
+                                    pose.pose.position.y - prev_pose.pose.position.y,
+                                    pose.pose.position.z - prev_pose.pose.position.z
+                                );
+                            }
+                            forward.normalize();
+                            
+                            Eigen::Vector3f right(-forward.y(), forward.x(), 0.0f);
+                            right.normalize();
+                            
+                            // Create gradient segments across the width
+                            for (int seg = 0; seg < gradient_segments; ++seg) {
+                                float t = float(seg) / float(gradient_segments - 1); // 0 to 1
+                                float offset = (t - 0.5f) * pt->path_width; // -half_width to +half_width
+                                
+                                Eigen::Vector3f vertex = pos + right * offset;
+                                ribbon_vertices.push_back(vertex);
+                                
+                                // Calculate alpha based on distance from center
+                                float distance_from_center = std::abs(offset) / half_width; // 0 to 1
+                                float alpha = distance_from_center; // 0 at center, 1 at edges
+                                alpha = std::min(1.0f, alpha); // Clamp to 1
+                                
+                                Eigen::Vector4f color(1.0f, 0.5f, 0.0f, alpha);
+                                vertex_colors.push_back(color);
+                            }
+                        }
+                        
+                        // Create indices for triangle strips (quads)
+                        for (size_t i = 0; i < n - 1; ++i) {
+                            for (int seg = 0; seg < gradient_segments - 1; ++seg) {
+                                // Current row indices
+                                GLuint curr_left = i * gradient_segments + seg;
+                                GLuint curr_right = i * gradient_segments + seg + 1;
+                                
+                                // Next row indices
+                                GLuint next_left = (i + 1) * gradient_segments + seg;
+                                GLuint next_right = (i + 1) * gradient_segments + seg + 1;
+                                
+                                // Create two triangles for each quad
+                                indices.push_back(curr_left);
+                                indices.push_back(curr_right);
+                                indices.push_back(next_left);
+                                
+                                indices.push_back(curr_right);
+                                indices.push_back(next_right);
+                                indices.push_back(next_left);
+                            }
+                        }
+                        
+                        // Create color VBO if not exists
+                        if (pt->color_vbo == 0) {
+                            glGenBuffers(1, &pt->color_vbo);
+                        }
+                        
+                        // Upload vertices
+                        glBindVertexArray(pt->vao);
+                        glBindBuffer(GL_ARRAY_BUFFER, pt->vbo);
+                        glBufferData(GL_ARRAY_BUFFER, 
+                                   ribbon_vertices.size() * sizeof(Eigen::Vector3f),
+                                   ribbon_vertices.data(), 
+                                   GL_DYNAMIC_DRAW);
+                        
+                        glEnableVertexAttribArray(0);
+                        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
+                                            sizeof(Eigen::Vector3f), (void*)0);
+                        
+                        // Upload colors
+                        glBindBuffer(GL_ARRAY_BUFFER, pt->color_vbo);
+                        glBufferData(GL_ARRAY_BUFFER,
+                                   vertex_colors.size() * sizeof(Eigen::Vector4f),
+                                   vertex_colors.data(),
+                                   GL_DYNAMIC_DRAW);
+                        
+                        glEnableVertexAttribArray(1); // Assuming color is attribute 1
+                        glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE,
+                                            sizeof(Eigen::Vector4f), (void*)0);
+                        
+                        // Create index buffer
+                        GLuint ibo;
+                        glGenBuffers(1, &ibo);
+                        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+                        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 
+                                   indices.size() * sizeof(GLuint),
+                                   indices.data(), 
+                                   GL_STATIC_DRAW);
+                        
+                        // Use vertex color mode
+                        shader.set_uniform("color_mode", 2); // Vertex color mode
+                        
+                        // Enable blending for transparency
+                        glEnable(GL_BLEND);
+                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                        
+                        // Draw using indices
+                        glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
+                        
+                        glDisable(GL_BLEND);
+                        glDisableVertexAttribArray(1);
+                        glBindVertexArray(0);
+                        
+                        // Cleanup index buffer
+                        glDeleteBuffers(1, &ibo);
+                    }
+                    
+                    glBindBuffer(GL_ARRAY_BUFFER, 0);
+                }
+            }
+        }
+        
         // ============================================
         // render point clouds ros2 topics
         // ============================================
@@ -1675,8 +2172,8 @@ public:
             map_snapshotter_ = std::make_unique<mbgl::SimpleMapSnapshotter>(
                 mbgl::Size{static_cast<uint32_t>(size.x()), static_cast<uint32_t>(size.y())}, 
                 1.0f, 
-                "API_KEY_HERE_MAPBOX", 
-                "API_KEY_HERE_GOOGLE"
+                "pk.eyJ1IjoiYXJtYWdlbmlzcyIsImEiOiJjbWRucWJ2enUwNHdwMm5wczE2YWU0ejZ4In0.lVcJwTwb-2n0yGo4bKeWEQ",
+                "AIzaSyDLvsW4iy1cwlRv7JGd6xp49cs60YNuyJs"
             );
 
             map_snapshotter_->setCircleLatLng(25.651454988788377, -100.29369354881304);
@@ -2206,6 +2703,110 @@ public:
         std::cout << red << "Marker array topic not found: " << topic << reset << std::endl;
     }
 
+    // ================================
+    // ROS2 Path topic
+    // ================================
+    
+    void addPathTopic(const std::string &topic, int path_type = 0, int color_mode = 0)
+    {
+        // avoid duplicates
+        {
+            std::lock_guard lk(path_topics_mutex_);
+            for (auto &pt_ptr : path_topics_)
+                if (pt_ptr->topic_name == topic)
+                    return;
+        }
+
+        // create a new PathTopic
+        auto pt = std::make_shared<PathTopic>();
+        pt->topic_name = topic;
+        pt->path = std::make_shared<nav_msgs::msg::Path>();
+        pt->path_type = path_type; // Set the path type (0 = normal, 1 = car)
+        pt->color_mode = color_mode; // Set the color mode (0 = flat, 1 = gradient)
+
+        // subscription callback
+        pt->sub = node_->create_subscription<nav_msgs::msg::Path>(
+            topic, rclcpp::QoS(10),
+            [this, pt, topic](nav_msgs::msg::Path::SharedPtr msg)
+            {
+                {
+                    std::lock_guard lk(path_topics_mutex_);
+                    pt->path = msg;
+                    pt->last_update = std::chrono::steady_clock::now();
+                    
+                    if (!msg->poses.empty())
+                    {
+                        pt->frame_id = msg->header.frame_id;
+                        pt->num_points = msg->poses.size();
+                        
+                        try
+                        {
+                            auto tf_stamped = tf_buffer_->lookupTransform(
+                                fixed_frame_, pt->frame_id, tf2::TimePointZero);
+                            pt->transform = toEigen(tf_stamped.transform);
+                        }
+                        catch (...)
+                        { /* leave identity */
+                        }
+                    }
+                }
+
+                // std::cout << "[PATH_CB] " << topic << " → " << msg->poses.size() << " poses\n";
+            });
+
+        // store the new topic
+        {
+            std::lock_guard lk(path_topics_mutex_);
+            path_topics_.push_back(pt);
+        }
+        
+        const char* type_str = (path_type == 0) ? "Normal Line" : "Car Path (1.5m width)";
+        const char* color_str;
+        if (color_mode == 0) {
+            color_str = "Flat";
+        } else if (color_mode == 1) {
+            color_str = "Gradient (Center→Edges)";
+        } else {
+            color_str = "Gradient (Edges→Center)";
+        }
+        
+        if (path_type == 0) {
+            std::cout << green << "✅ Subscribed to Path topic: " << topic 
+                      << " as " << type_str << reset << std::endl;
+        } else {
+            std::cout << green << "✅ Subscribed to Path topic: " << topic 
+                      << " as " << type_str << " [" << color_str << "]" << reset << std::endl;
+        }
+    }
+
+    void removePathTopic(const std::string &topic)
+    {
+        std::lock_guard lk(path_topics_mutex_);
+        for (auto it = path_topics_.begin(); it != path_topics_.end(); ++it)
+        {
+            if ((*it)->topic_name == topic)
+            {
+                std::cout << red << "Removing path topic: " << topic << reset << std::endl;
+                
+                // Cleanup OpenGL resources
+                if ((*it)->vao != 0) {
+                    glDeleteVertexArrays(1, &(*it)->vao);
+                }
+                if ((*it)->vbo != 0) {
+                    glDeleteBuffers(1, &(*it)->vbo);
+                }
+                if ((*it)->color_vbo != 0) {
+                    glDeleteBuffers(1, &(*it)->color_vbo);
+                }
+                
+                (*it)->sub.reset();
+                path_topics_.erase(it);
+                return;
+            }
+        }
+        std::cout << red << "Path topic not found: " << topic << reset << std::endl;
+    }
+
 private:
     // color for the terminals
     std::string green = "\033[1;32m";
@@ -2291,6 +2892,10 @@ private:
     std::vector<std::shared_ptr<MarkerArrayTopic> > marker_array_topics_;
     std::mutex marker_array_topics_mutex_;
     int selected_marker_topic_idx_{-1};
+
+    // Store path topics
+    std::vector<std::shared_ptr<PathTopic> > path_topics_;
+    std::mutex path_topics_mutex_;
 
     // lights
     std::chrono::steady_clock::time_point blink_start_ = std::chrono::steady_clock::now();
