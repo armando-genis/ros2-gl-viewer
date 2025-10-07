@@ -1,6 +1,6 @@
 # ros-gl-viewer
-A lightweight, OpenGL-powered 3D visualization tool for ROS 2, ideal for SLAM, perception debugging and rapid prototyping
 
+A lightweight, OpenGL-powered 3D visualization tool for ROS 2, ideal for SLAM, perception debugging and rapid prototyping
 
 ![gl Screenshot](https://github.com/armando-genis/ros2-gl-viewer/blob/main/img/img2.png)
 
@@ -45,16 +45,13 @@ cmake . -B build
 cmake --build build
 
 
-
-MAPBOX_ACCESS_TOKEN=pk.eyJ1IjoiYXJtYWdlbmlzcyIsImEiOiJjbWRucWJ2enUwNHdwMm5wczE2YWU0ejZ4In0.lVcJwTwb-2n0yGo4bKeWES ./build/platform/glfw/mbgl-glfw
-
 cd /ros2-gl-viewer
 
-mkdir build 
-cd build 
+mkdir build
+cd build
 
 cmake ..
-make 
+make
 
 ./pointcloud_viewer
 
@@ -64,14 +61,10 @@ make
 - https://glm.g-truc.net/0.9.9/index.html
 - https://github.com/EdoardoLuciani/OpenGL-4.5-Freetype-Example/blob/master/main.cpp
 
-
-
 in the /stdafx.h
 
 #include "FastNoise/FastNoise.h"
 #include "FastNoise/Metadata.h"
-
-
 
 Found frame: zedd with parent: base_link
 Found frame: vectornav with parent: base_link
@@ -83,10 +76,7 @@ Found frame: 'velodyne' with parent: 'base_link'
 Found frame: 'base_footprint' with parent: 'base_link'
 Found frame: 'vectornav' with parent: 'base_link'
 
-
 /workspace/models/map_2.ply
-
-
 
 /workspace/models/map_tec.ply
 
@@ -96,6 +86,6 @@ Found frame: 'vectornav' with parent: 'base_link'
 
 /workspace/oms/open_house_v2.osm
 
-
-
 /workspace/models/LOAM/cloudGlobal.pcd
+
+/workspace/models/sdv.glb

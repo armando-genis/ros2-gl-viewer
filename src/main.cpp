@@ -456,6 +456,13 @@ public:
         }
         ImGui::Text("Memory: %zu MB", last_memory_check_);
 
+        // ============================================
+        // Point Size Control (RViz-style)
+        // ============================================
+        ImGui::Separator();
+        ImGui::Text("Point Cloud Settings:");
+        ImGui::SliderFloat("ROS2 Topic Point Size", &ros2_topic_point_size_, 0.0f, 50.0f, "%.1f");
+        ImGui::SliderFloat("PCD File Point Size", &pcd_file_point_size_, 0.0f, 50.0f, "%.1f");
 
         // ============================================
         // Split-screen mode control
@@ -1040,11 +1047,73 @@ public:
             }
         }
 
+
+        // ============================================
+        // lights
+        // ============================================
+
+        {
+            // 1) compute elapsed time
+            auto now = std::chrono::steady_clock::now();
+            float t = std::chrono::duration<float>(now - blink_start_).count();
+
+            // 2) new blink logic
+            constexpr float offTime = 0.5f;            // first 0.5 s = dim only
+            constexpr float onTime = 2.5f;             // next 2.5 s = bright
+            constexpr float period = offTime + onTime; // total = 3 s
+            float phase = std::fmod(t, period);
+
+            bool lightOn = (phase >= offTime); // off for [0,0.5), on for [0.5,3)
+
+            shader.set_uniform("color_mode", 1);
+
+            const std::array<const char *, 2> frames = {"light_1", "light_2"};
+            for (auto frame_name : frames)
+            {
+                Eigen::Affine3f M = Eigen::Affine3f::Identity();
+                {
+                    std::lock_guard<std::mutex> lk(tf_mutex_);
+                    auto it = frame_transforms_.find(frame_name);
+                    if (it != frame_transforms_.end())
+                        M = it->second;
+                }
+
+                // Create rounded rectangle shape (car tail light)
+                // Main rectangular body with slight rounding via sphere
+                const auto &sphere = glk::Primitives::instance()->primitive(glk::Primitives::SPHERE);
+                
+                // Choose color based on blink state
+                Eigen::Vector4f lightColor;
+                if (lightOn)
+                {
+                    lightColor = Eigen::Vector4f(1.0f, 0.1f, 0.1f, 1.0f); // Bright red when on
+                }
+                else
+                {
+                    lightColor = Eigen::Vector4f(0.35f, 0.05f, 0.05f, 1.0f); // Dim red when off
+                }
+                shader.set_uniform("material_color", lightColor);
+
+                // Draw rounded rectangle as scaled sphere (wider than tall)
+                Eigen::Affine3f lightTransform = M;
+                lightTransform.rotate(Eigen::AngleAxisf(M_PI / 2.0f, Eigen::Vector3f::UnitZ())); // Rotate 90 degrees around Z
+                lightTransform.scale(Eigen::Vector3f(0.17f, 0.12f, 0.08f)); // Wide, medium height, shallow depth
+                shader.set_uniform("model_matrix", lightTransform.matrix());
+                sphere.draw(shader);
+            }
+        }
+
         // ============================================
         // render PCD point cloud
         // ============================================
         if (pcd_loader_.isLoaded() || pcd_loader_.getPointCount() != 0)
         {
+            // Convert RViz-style point size (0-50) to shader uniforms
+            // Multiply by 20 to compensate for z_dist factor in shader
+            float shader_point_size = pcd_file_point_size_ * 20.0f;
+            shader.set_uniform("point_scale", shader_point_size);
+            shader.set_uniform("point_size", 1.0f);
+            
             pcd_loader_.renderpcl(shader, tf_mutex_, frame_transforms_);
         }
 
@@ -1089,7 +1158,11 @@ public:
             shader.set_uniform("color_mode", 1);  // Use flat color mode
             shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f)); // White color
 
-            shader.set_uniform("point_scale", 0.0f); // NO fall-off
+            // Convert RViz-style point size (0-50) to shader uniforms
+            // Multiply by 20 to compensate for z_dist factor in shader
+            float shader_point_size = ros2_topic_point_size_ * 20.0f;
+            shader.set_uniform("point_scale", shader_point_size);
+            shader.set_uniform("point_size", 1.0f);
 
             // 1) One-time VAO+VBO creation
             if (dbgVao == 0)
@@ -1139,6 +1212,11 @@ public:
                 //           << n
                 //           << " pts\n";
 
+                // Convert RViz-style point size (0-50) to shader uniforms
+                float shader_point_size = ros2_topic_point_size_ * 20.0f;
+                shader.set_uniform("point_scale", shader_point_size);
+                shader.set_uniform("point_size", 1.0f);
+                
                 // draw the per-cloud VAO
                 shader.set_uniform("model_matrix", ct->transform.matrix());
                 glBindVertexArray(ct->vao);
@@ -1522,6 +1600,7 @@ public:
         }
     }
 
+
     // Function to load image as OpenGL texture
     GLuint loadImageTexture(const std::string &path)
     {
@@ -1596,8 +1675,8 @@ public:
             map_snapshotter_ = std::make_unique<mbgl::SimpleMapSnapshotter>(
                 mbgl::Size{static_cast<uint32_t>(size.x()), static_cast<uint32_t>(size.y())}, 
                 1.0f, 
-                "pk.eyJ1IjoiYXJtYWdlbmlzcyIsImEiOiJjbWRucWJ2enUwNHdwMm5wczE2YWU0ejZ4In0.lVcJwTwb-2n0yGo4bKeWEQ",
-                "AIzaSyDLvsW4iy1cwlRv7JGd6xp49cs60YNuyJs"
+                "API_KEY_HERE_MAPBOX", 
+                "API_KEY_HERE_GOOGLE"
             );
 
             map_snapshotter_->setCircleLatLng(25.651454988788377, -100.29369354881304);
@@ -2288,6 +2367,9 @@ private:
         {"⚙️", "Lanelet", DockItem::SETTINGS, 0, "6.png"},
         {"ℹ️", "Info", DockItem::INFO, 0, "1.png"}};
 
+    // Point size controls (RViz-style: 0-50 range)
+    float ros2_topic_point_size_ = 100.0f;  // Default 10 (medium size)
+    float pcd_file_point_size_ = 5.0f;     // Default 5 (small size)
 
 };
 
