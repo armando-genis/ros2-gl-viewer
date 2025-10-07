@@ -195,6 +195,7 @@ set(GLK_SOURCES
   src/glk/loaders/ply_loader.cpp
   src/glk/primitives/primitives.cpp
   src/glk/TextRendering.cpp
+  src/glk/PathRendering.cpp
   src/glk/PclLoader.cpp
   src/glk/modelUpload.cpp
   src/glk/LaneletLoader.cpp

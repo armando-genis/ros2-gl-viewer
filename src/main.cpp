@@ -41,6 +41,7 @@
 #include <glk/glsl_shader.hpp>
 #include <glk/frame_buffer.hpp>
 #include <glk/TextRendering.hpp>
+#include <glk/PathRendering.hpp>
 #include "glk/PclLoader.hpp"
 #include "glk/LaneletLoader.hpp"
 #include "glk/modelUpload.hpp"
@@ -153,6 +154,7 @@ public:
     {
 
         text_renderer_.cleanupTextRendering();
+        path_renderer_.cleanupPathRendering();
         // Cleanup GLB shader
         if (glb_shader_program_ != 0)
         {
@@ -394,6 +396,14 @@ public:
             std::cerr << "Failed to initialize text rendering" << std::endl;
             return false;
         }
+
+        // ======= PATH SHADER INITIALIZATION =======
+        if (!path_renderer_.initPathRendering())
+        {
+            std::cerr << "Failed to initialize path rendering" << std::endl;
+            return false;
+        }
+        std::cout << green << "Successfully initialized Path shader" << reset << std::endl;
 
         // ======= GLB SHADER INITIALIZATION =======
         if (!model_upload_.createGLBShader(glb_shader_program_))
@@ -1091,7 +1101,7 @@ public:
     }
 
     // Helper method to render all 3D content (PCD, meshes, lanelet, grid, frames)
-    void render3DContent(glk::GLSLShader &shader)
+    void render3DContent(glk::GLSLShader &shader, const Eigen::Matrix4f& view, const Eigen::Matrix4f& projection)
     {
         // ============================================
         // render grid
@@ -1242,408 +1252,48 @@ public:
             lanelet_loader_.stripes(shader);
         }
         // ============================================
-        // render path topics
+        // render path topics using shader-based approach
         // ============================================
         {
             std::lock_guard lk(path_topics_mutex_);
-            shader.set_uniform("color_mode", 1);  // Use flat color mode
             
+            // Clear previous path data
+            path_renderer_.clearPaths();
+            
+            // Add all path segments to the shader-based renderer
             for (auto &pt : path_topics_)
             {
                 if (!pt->path || pt->path->poses.empty())
                     continue;
                 
-                size_t n = pt->path->poses.size();
+                // Convert path poses to Eigen vectors
+                std::vector<Eigen::Vector3f> path_points;
+                path_points.reserve(pt->path->poses.size());
                 
-                // Create/update VAO and VBO for the path
-                if (pt->vao == 0) {
-                    glGenVertexArrays(1, &pt->vao);
-                    glGenBuffers(1, &pt->vbo);
+                for (const auto &pose : pt->path->poses) {
+                    Eigen::Vector3f world_pos = pt->transform * Eigen::Vector3f(
+                        pose.pose.position.x,
+                        pose.pose.position.y,
+                        pose.pose.position.z
+                    );
+                    path_points.push_back(world_pos);
                 }
                 
-                shader.set_uniform("model_matrix", pt->transform.matrix());
-                
+                // Determine color based on path type
+                Eigen::Vector3f path_color;
                 if (pt->path_type == 0) {
-                    // ========== NORMAL PATH (LINE) ==========
-                    std::vector<Eigen::Vector3f> path_points;
-                    path_points.reserve(n);
-                    for (const auto &pose : pt->path->poses) {
-                        path_points.emplace_back(
-                            pose.pose.position.x,
-                            pose.pose.position.y,
-                            pose.pose.position.z
-                        );
-                    }
-                    
-                    // Upload to GPU
-                    glBindVertexArray(pt->vao);
-                    glBindBuffer(GL_ARRAY_BUFFER, pt->vbo);
-                    glBufferData(GL_ARRAY_BUFFER, 
-                               path_points.size() * sizeof(Eigen::Vector3f),
-                               path_points.data(), 
-                               GL_DYNAMIC_DRAW);
-                    
-                    // Setup vertex attributes
-                    glEnableVertexAttribArray(0);
-                    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
-                                        sizeof(Eigen::Vector3f), (void*)0);
-                    
-                    shader.set_uniform("material_color", Eigen::Vector4f(0.0f, 1.0f, 1.0f, 1.0f)); // Cyan
-                    
-                    glLineWidth(3.0f);
-                    glDrawArrays(GL_LINE_STRIP, 0, GLsizei(n));
-                    glLineWidth(1.0f);
-                    
-                    glBindVertexArray(0);
-                    glBindBuffer(GL_ARRAY_BUFFER, 0);
-                    
+                    path_color = Eigen::Vector3f(0.0f, 1.0f, 1.0f); // Cyan for normal paths
                 } else {
-                    // ========== CAR PATH (RIBBON WITH WIDTH) ==========
-                    float half_width = pt->path_width / 2.0f; // 0.75m to each side
-                    
-                    if (pt->color_mode == 0) {
-                        // ===== FLAT COLOR MODE =====
-                        std::vector<Eigen::Vector3f> ribbon_vertices;
-                        ribbon_vertices.reserve(n * 2); // 2 vertices per pose (left and right)
-                        
-                        for (size_t i = 0; i < n; ++i) {
-                            const auto &pose = pt->path->poses[i];
-                            
-                            // Get position
-                            Eigen::Vector3f pos(
-                                pose.pose.position.x,
-                                pose.pose.position.y,
-                                pose.pose.position.z
-                            );
-                            
-                            // Calculate forward direction
-                            Eigen::Vector3f forward;
-                            if (i < n - 1) {
-                                const auto &next_pose = pt->path->poses[i + 1];
-                                forward = Eigen::Vector3f(
-                                    next_pose.pose.position.x - pose.pose.position.x,
-                                    next_pose.pose.position.y - pose.pose.position.y,
-                                    next_pose.pose.position.z - pose.pose.position.z
-                                );
-                            } else {
-                                const auto &prev_pose = pt->path->poses[i - 1];
-                                forward = Eigen::Vector3f(
-                                    pose.pose.position.x - prev_pose.pose.position.x,
-                                    pose.pose.position.y - prev_pose.pose.position.y,
-                                    pose.pose.position.z - prev_pose.pose.position.z
-                                );
-                            }
-                            forward.normalize();
-                            
-                            // Calculate perpendicular (right) direction
-                            Eigen::Vector3f right(-forward.y(), forward.x(), 0.0f);
-                            right.normalize();
-                            
-                            // Create left and right vertices
-                            ribbon_vertices.push_back(pos - right * half_width);
-                            ribbon_vertices.push_back(pos + right * half_width);
-                        }
-                        
-                        // Upload to GPU
-                        glBindVertexArray(pt->vao);
-                        glBindBuffer(GL_ARRAY_BUFFER, pt->vbo);
-                        glBufferData(GL_ARRAY_BUFFER, 
-                                   ribbon_vertices.size() * sizeof(Eigen::Vector3f),
-                                   ribbon_vertices.data(), 
-                                   GL_DYNAMIC_DRAW);
-                        
-                        glEnableVertexAttribArray(0);
-                        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
-                                            sizeof(Eigen::Vector3f), (void*)0);
-                        
-                        shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 0.5f, 0.0f, 0.8f));
-                        
-                        glDrawArrays(GL_TRIANGLE_STRIP, 0, GLsizei(ribbon_vertices.size()));
-                        
-                        glBindVertexArray(0);
-                        
-                    } else if (pt->color_mode == 1) {
-                        // ===== GRADIENT MODE 1 (center solid → edges transparent) =====
-                        // Create smooth gradient ribbon using multiple segments across width
-                        const int gradient_segments = 16; // More segments = smoother gradient
-                        std::vector<Eigen::Vector3f> ribbon_vertices;
-                        std::vector<Eigen::Vector4f> vertex_colors;
-                        std::vector<GLuint> indices;
-                        
-                        // Reserve space
-                        ribbon_vertices.reserve(n * gradient_segments);
-                        vertex_colors.reserve(n * gradient_segments);
-                        indices.reserve((n - 1) * gradient_segments * 6); // 2 triangles per quad
-                        
-                        // Create vertices for each pose
-                        for (size_t i = 0; i < n; ++i) {
-                            const auto &pose = pt->path->poses[i];
-                            
-                            Eigen::Vector3f pos(
-                                pose.pose.position.x,
-                                pose.pose.position.y,
-                                pose.pose.position.z
-                            );
-                            
-                            // Calculate forward direction
-                            Eigen::Vector3f forward;
-                            if (i < n - 1) {
-                                const auto &next_pose = pt->path->poses[i + 1];
-                                forward = Eigen::Vector3f(
-                                    next_pose.pose.position.x - pose.pose.position.x,
-                                    next_pose.pose.position.y - pose.pose.position.y,
-                                    next_pose.pose.position.z - pose.pose.position.z
-                                );
-                            } else {
-                                const auto &prev_pose = pt->path->poses[i - 1];
-                                forward = Eigen::Vector3f(
-                                    pose.pose.position.x - prev_pose.pose.position.x,
-                                    pose.pose.position.y - prev_pose.pose.position.y,
-                                    pose.pose.position.z - prev_pose.pose.position.z
-                                );
-                            }
-                            forward.normalize();
-                            
-                            Eigen::Vector3f right(-forward.y(), forward.x(), 0.0f);
-                            right.normalize();
-                            
-                            // Create gradient segments across the width
-                            for (int seg = 0; seg < gradient_segments; ++seg) {
-                                float t = float(seg) / float(gradient_segments - 1); // 0 to 1
-                                float offset = (t - 0.5f) * pt->path_width; // -half_width to +half_width
-                                
-                                Eigen::Vector3f vertex = pos + right * offset;
-                                ribbon_vertices.push_back(vertex);
-                                
-                                // Calculate alpha based on distance from center
-                                float distance_from_center = std::abs(offset) / half_width; // 0 to 1
-                                float alpha = 1.0f - distance_from_center; // 1 at center, 0 at edges
-                                alpha = std::max(0.0f, alpha); // Clamp to 0
-                                
-                                Eigen::Vector4f color(1.0f, 0.5f, 0.0f, alpha);
-                                vertex_colors.push_back(color);
-                            }
-                        }
-                        
-                        // Create indices for triangle strips (quads)
-                        for (size_t i = 0; i < n - 1; ++i) {
-                            for (int seg = 0; seg < gradient_segments - 1; ++seg) {
-                                // Current row indices
-                                GLuint curr_left = i * gradient_segments + seg;
-                                GLuint curr_right = i * gradient_segments + seg + 1;
-                                
-                                // Next row indices
-                                GLuint next_left = (i + 1) * gradient_segments + seg;
-                                GLuint next_right = (i + 1) * gradient_segments + seg + 1;
-                                
-                                // Create two triangles for each quad
-                                indices.push_back(curr_left);
-                                indices.push_back(curr_right);
-                                indices.push_back(next_left);
-                                
-                                indices.push_back(curr_right);
-                                indices.push_back(next_right);
-                                indices.push_back(next_left);
-                            }
-                        }
-                        
-                        // Create color VBO if not exists
-                        if (pt->color_vbo == 0) {
-                            glGenBuffers(1, &pt->color_vbo);
-                        }
-                        
-                        // Upload vertices
-                        glBindVertexArray(pt->vao);
-                        glBindBuffer(GL_ARRAY_BUFFER, pt->vbo);
-                        glBufferData(GL_ARRAY_BUFFER, 
-                                   ribbon_vertices.size() * sizeof(Eigen::Vector3f),
-                                   ribbon_vertices.data(), 
-                                   GL_DYNAMIC_DRAW);
-                        
-                        glEnableVertexAttribArray(0);
-                        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
-                                            sizeof(Eigen::Vector3f), (void*)0);
-                        
-                        // Upload colors
-                        glBindBuffer(GL_ARRAY_BUFFER, pt->color_vbo);
-                        glBufferData(GL_ARRAY_BUFFER,
-                                   vertex_colors.size() * sizeof(Eigen::Vector4f),
-                                   vertex_colors.data(),
-                                   GL_DYNAMIC_DRAW);
-                        
-                        glEnableVertexAttribArray(1); // Assuming color is attribute 1
-                        glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE,
-                                            sizeof(Eigen::Vector4f), (void*)0);
-                        
-                        // Create index buffer
-                        GLuint ibo;
-                        glGenBuffers(1, &ibo);
-                        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-                        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 
-                                   indices.size() * sizeof(GLuint),
-                                   indices.data(), 
-                                   GL_STATIC_DRAW);
-                        
-                        // Use vertex color mode
-                        shader.set_uniform("color_mode", 2); // Vertex color mode
-                        
-                        // Enable blending for transparency
-                        glEnable(GL_BLEND);
-                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                        
-                        // Draw using indices
-                        glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
-                        
-                        glDisable(GL_BLEND);
-                        glDisableVertexAttribArray(1);
-                        glBindVertexArray(0);
-                        
-                        // Cleanup index buffer
-                        glDeleteBuffers(1, &ibo);
-                        
-                    } else {
-                        // ===== GRADIENT MODE 2 (edges solid → center transparent) =====
-                        // Create smooth gradient ribbon using multiple segments across width
-                        const int gradient_segments = 16; // More segments = smoother gradient
-                        std::vector<Eigen::Vector3f> ribbon_vertices;
-                        std::vector<Eigen::Vector4f> vertex_colors;
-                        std::vector<GLuint> indices;
-                        
-                        // Reserve space
-                        ribbon_vertices.reserve(n * gradient_segments);
-                        vertex_colors.reserve(n * gradient_segments);
-                        indices.reserve((n - 1) * gradient_segments * 6); // 2 triangles per quad
-                        
-                        // Create vertices for each pose
-                        for (size_t i = 0; i < n; ++i) {
-                            const auto &pose = pt->path->poses[i];
-                            
-                            Eigen::Vector3f pos(
-                                pose.pose.position.x,
-                                pose.pose.position.y,
-                                pose.pose.position.z
-                            );
-                            
-                            // Calculate forward direction
-                            Eigen::Vector3f forward;
-                            if (i < n - 1) {
-                                const auto &next_pose = pt->path->poses[i + 1];
-                                forward = Eigen::Vector3f(
-                                    next_pose.pose.position.x - pose.pose.position.x,
-                                    next_pose.pose.position.y - pose.pose.position.y,
-                                    next_pose.pose.position.z - pose.pose.position.z
-                                );
-                            } else {
-                                const auto &prev_pose = pt->path->poses[i - 1];
-                                forward = Eigen::Vector3f(
-                                    pose.pose.position.x - prev_pose.pose.position.x,
-                                    pose.pose.position.y - prev_pose.pose.position.y,
-                                    pose.pose.position.z - prev_pose.pose.position.z
-                                );
-                            }
-                            forward.normalize();
-                            
-                            Eigen::Vector3f right(-forward.y(), forward.x(), 0.0f);
-                            right.normalize();
-                            
-                            // Create gradient segments across the width
-                            for (int seg = 0; seg < gradient_segments; ++seg) {
-                                float t = float(seg) / float(gradient_segments - 1); // 0 to 1
-                                float offset = (t - 0.5f) * pt->path_width; // -half_width to +half_width
-                                
-                                Eigen::Vector3f vertex = pos + right * offset;
-                                ribbon_vertices.push_back(vertex);
-                                
-                                // Calculate alpha based on distance from center
-                                float distance_from_center = std::abs(offset) / half_width; // 0 to 1
-                                float alpha = distance_from_center; // 0 at center, 1 at edges
-                                alpha = std::min(1.0f, alpha); // Clamp to 1
-                                
-                                Eigen::Vector4f color(1.0f, 0.5f, 0.0f, alpha);
-                                vertex_colors.push_back(color);
-                            }
-                        }
-                        
-                        // Create indices for triangle strips (quads)
-                        for (size_t i = 0; i < n - 1; ++i) {
-                            for (int seg = 0; seg < gradient_segments - 1; ++seg) {
-                                // Current row indices
-                                GLuint curr_left = i * gradient_segments + seg;
-                                GLuint curr_right = i * gradient_segments + seg + 1;
-                                
-                                // Next row indices
-                                GLuint next_left = (i + 1) * gradient_segments + seg;
-                                GLuint next_right = (i + 1) * gradient_segments + seg + 1;
-                                
-                                // Create two triangles for each quad
-                                indices.push_back(curr_left);
-                                indices.push_back(curr_right);
-                                indices.push_back(next_left);
-                                
-                                indices.push_back(curr_right);
-                                indices.push_back(next_right);
-                                indices.push_back(next_left);
-                            }
-                        }
-                        
-                        // Create color VBO if not exists
-                        if (pt->color_vbo == 0) {
-                            glGenBuffers(1, &pt->color_vbo);
-                        }
-                        
-                        // Upload vertices
-                        glBindVertexArray(pt->vao);
-                        glBindBuffer(GL_ARRAY_BUFFER, pt->vbo);
-                        glBufferData(GL_ARRAY_BUFFER, 
-                                   ribbon_vertices.size() * sizeof(Eigen::Vector3f),
-                                   ribbon_vertices.data(), 
-                                   GL_DYNAMIC_DRAW);
-                        
-                        glEnableVertexAttribArray(0);
-                        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
-                                            sizeof(Eigen::Vector3f), (void*)0);
-                        
-                        // Upload colors
-                        glBindBuffer(GL_ARRAY_BUFFER, pt->color_vbo);
-                        glBufferData(GL_ARRAY_BUFFER,
-                                   vertex_colors.size() * sizeof(Eigen::Vector4f),
-                                   vertex_colors.data(),
-                                   GL_DYNAMIC_DRAW);
-                        
-                        glEnableVertexAttribArray(1); // Assuming color is attribute 1
-                        glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE,
-                                            sizeof(Eigen::Vector4f), (void*)0);
-                        
-                        // Create index buffer
-                        GLuint ibo;
-                        glGenBuffers(1, &ibo);
-                        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-                        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 
-                                   indices.size() * sizeof(GLuint),
-                                   indices.data(), 
-                                   GL_STATIC_DRAW);
-                        
-                        // Use vertex color mode
-                        shader.set_uniform("color_mode", 2); // Vertex color mode
-                        
-                        // Enable blending for transparency
-                        glEnable(GL_BLEND);
-                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                        
-                        // Draw using indices
-                        glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
-                        
-                        glDisable(GL_BLEND);
-                        glDisableVertexAttribArray(1);
-                        glBindVertexArray(0);
-                        
-                        // Cleanup index buffer
-                        glDeleteBuffers(1, &ibo);
-                    }
-                    
-                    glBindBuffer(GL_ARRAY_BUFFER, 0);
+                    path_color = Eigen::Vector3f(1.0f, 0.5f, 0.0f); // Orange for car paths
                 }
+                
+                // Add path segment to shader renderer
+                path_renderer_.addPathSegment(path_points, path_color, 
+                                           pt->path_width, pt->path_type, pt->color_mode, 0.8f);
             }
+            
+            // Render all paths using the shader-based system
+            path_renderer_.renderPaths(view, projection);
         }
         
         // ============================================
@@ -1866,7 +1516,7 @@ public:
             model_upload_.setMatrices(right_view, proj_right);
 
             // Render all 3D content on right side
-            render3DContent(shader);
+            render3DContent(shader, right_view, proj_right);
 
             // Ensure depth buffer is properly written for this viewport
             glFlush();
@@ -1896,7 +1546,7 @@ public:
             model_upload_.setMatrices(right_view, proj);
 
             // Render all 3D content
-            render3DContent(shader);
+            render3DContent(shader, right_view, proj);
 
             // render text
             text_renderer_.renderWorldText(right_view, proj);
@@ -2902,6 +2552,9 @@ private:
 
     // FreeType and text rendering
     TextRenderer text_renderer_;
+    
+    // Shader-based path rendering
+    glk::PathRenderer path_renderer_;
 
     // PCD loader
     PclLoader pcd_loader_;
