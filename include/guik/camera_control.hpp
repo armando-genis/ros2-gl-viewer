@@ -47,6 +47,10 @@ public:
 
   Eigen::Quaternionf rotation() const;
   Eigen::Matrix4f view_matrix() const override;
+  
+  // Setters for camera position
+  void setCenter(const Eigen::Vector3f& new_center);
+  Eigen::Vector3f getCenter() const;
 
 private:
   Eigen::Vector3f center;

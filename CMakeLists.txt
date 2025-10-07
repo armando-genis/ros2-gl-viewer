@@ -26,6 +26,9 @@ pkg_check_modules(LIBUV REQUIRED libuv)
 find_package(rclcpp REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -56,13 +59,20 @@ set(STB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 include_directories(${CGLTF_DIR})
 include_directories(${STB_DIR})
 
+# ===============================================
+# MAPBOX GL NATIVE CONFIGURATION (UPDATED)
+# ===============================================
+
 # Mapbox GL Native - Use pre-built libraries
 set(MAPBOX_GL_NATIVE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mapbox-gl-native)
 set(MAPBOX_GL_NATIVE_BUILD_DIR ${MAPBOX_GL_NATIVE_DIR}/build)
 
 # Include Mapbox GL Native headers
 include_directories(${MAPBOX_GL_NATIVE_DIR}/include)
-include_directories(${MAPBOX_GL_NATIVE_DIR}/platform/default/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/src)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/qt)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/platform)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/platform/default/include)  # This is where map_snapshotter.hpp is
 include_directories(${MAPBOX_GL_NATIVE_DIR}/platform/default/include/mbgl/storage)
 
 # Include Mapbox vendor dependencies that are needed for headers
@@ -73,45 +83,87 @@ include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/geometry.hpp
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/geojson.hpp/include)
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/rapidjson/include)
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/expected-lite/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/shelf-pack-cpp/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/vector-tile/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/protozero/include)
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/earcut.hpp/include)
 
-# Find Mapbox GL Native library and its vendor dependencies
-find_library(MAPBOX_CORE_LIB
-    NAMES mbgl-core
-    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
-    NO_DEFAULT_PATH
-)
+# Function to find all Mapbox libraries
+function(find_mapbox_libraries MAPBOX_BUILD_DIR RESULT_VAR)
+    set(FOUND_LIBS)
+    
+    # Core libraries (these should exist)
+    set(CORE_LIBS
+        "mbgl-core"
+        "mbgl-vendor-csscolorparser" 
+        "mbgl-vendor-nunicode"
+        "mbgl-vendor-parsedate"
+        "mbgl-vendor-sqlite"
+    )
+    
+    # Platform and additional libraries (MapSnapshotter is likely here)
+    set(PLATFORM_LIBS
+        "mbgl-platform-default"
+        "mbgl-platform"
+        "mbgl-headless"
+        "mbgl-filesource"
+        "mbgl-renderer"
+        "mbgl-storage"
+        "mbgl-style"
+        "mbgl-text"
+        "mbgl-gfx"
+        "mbgl-annotation"
+        "mbgl-geometry"
+        "mbgl-algorithm"
+        "mbgl-util"
+        "mbgl-vendor-protozero"
+        "mbgl-vendor-eternal"
+        "mbgl-vendor-polylabel"
+    )
+    
+    # Check all possible library names
+    foreach(LIB_NAME ${CORE_LIBS} ${PLATFORM_LIBS})
+        set(LIB_PATH "${MAPBOX_BUILD_DIR}/lib${LIB_NAME}.a")
+        if(EXISTS "${LIB_PATH}")
+            message(STATUS "Found Mapbox library: ${LIB_PATH}")
+            list(APPEND FOUND_LIBS "${LIB_PATH}")
+            
+            # Check if this library contains MapSnapshotter symbols (optional check)
+            execute_process(
+                COMMAND bash -c "nm '${LIB_PATH}' 2>/dev/null | grep -q 'MapSnapshotter' && echo 'HAS_SYMBOLS' || echo 'NO_SYMBOLS'"
+                OUTPUT_VARIABLE SYMBOL_CHECK
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(SYMBOL_CHECK STREQUAL "HAS_SYMBOLS")
+                message(STATUS "  ✓ Contains MapSnapshotter symbols: ${LIB_PATH}")
+            endif()
+        endif()
+    endforeach()
+    
+    set(${RESULT_VAR} ${FOUND_LIBS} PARENT_SCOPE)
+endfunction()
 
-# Find Mapbox vendor libraries
-find_library(MAPBOX_CSSCOLORPARSER_LIB
-    NAMES mbgl-vendor-csscolorparser
-    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
-    NO_DEFAULT_PATH
-)
+# Find all available Mapbox libraries
+find_mapbox_libraries(${MAPBOX_GL_NATIVE_BUILD_DIR} MAPBOX_LIBRARIES)
 
-find_library(MAPBOX_NUNICODE_LIB
-    NAMES mbgl-vendor-nunicode
-    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
-    NO_DEFAULT_PATH
-)
-
-find_library(MAPBOX_PARSEDATE_LIB
-    NAMES mbgl-vendor-parsedate
-    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
-    NO_DEFAULT_PATH
-)
-
-find_library(MAPBOX_SQLITE_LIB
-    NAMES mbgl-vendor-sqlite
-    PATHS ${MAPBOX_GL_NATIVE_BUILD_DIR}
-    NO_DEFAULT_PATH
-)
-
-# Check if library was found
-if(NOT MAPBOX_CORE_LIB)
-    message(FATAL_ERROR "Mapbox GL Native core library not found in ${MAPBOX_GL_NATIVE_BUILD_DIR}")
+# Check if we found the core library at minimum
+set(MAPBOX_CORE_LIB ${MAPBOX_GL_NATIVE_BUILD_DIR}/libmbgl-core.a)
+if(NOT EXISTS ${MAPBOX_CORE_LIB})
+    message(FATAL_ERROR "Mapbox GL Native core library not found at ${MAPBOX_CORE_LIB}")
 endif()
 
-message(STATUS "Found Mapbox GL Native: ${MAPBOX_CORE_LIB}")
+# Check if we found any libraries
+if(NOT MAPBOX_LIBRARIES)
+    message(FATAL_ERROR "No Mapbox GL Native libraries found in ${MAPBOX_GL_NATIVE_BUILD_DIR}")
+else()
+    list(LENGTH MAPBOX_LIBRARIES MAPBOX_LIB_COUNT)
+    message(STATUS "Found ${MAPBOX_LIB_COUNT} Mapbox libraries total")
+endif()
+
+# ===============================================
+# END MAPBOX CONFIGURATION
+# ===============================================
 
 
 # Include directories
@@ -120,13 +172,16 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${EIGEN3_INCLUDE_DIR}
     ${PCL_INCLUDE_DIRS}
+    ${FREETYPE_INCLUDE_DIRS}
+
+    # ROS2 dependencies
     ${rclcpp_INCLUDE_DIRS}
     ${pcl_conversions_INCLUDE_DIRS}
-    ${std_msgs_LIBRARIES}
+    ${std_msgs_INCLUDE_DIRS}
     ${tf2_INCLUDE_DIRS}
     ${tf2_ros_INCLUDE_DIRS}
     ${tf2_geometry_msgs_INCLUDE_DIRS}
-    ${FREETYPE_INCLUDE_DIRS}
+    ${visualization_msgs_INCLUDE_DIRS}
 )
 
 set(GLK_SOURCES
@@ -143,7 +198,7 @@ set(GLK_SOURCES
   src/glk/modelUpload.cpp
   src/glk/LaneletLoader.cpp
   src/glk/ThickLines.cpp
-  src/glk/MapboxRenderer.cpp
+  src/glk/MapBoxRendering.cpp
 )
 
 # List all source files in guik directory
@@ -180,40 +235,54 @@ target_include_directories(pointcloud_viewer PRIVATE
 )
 
 
+# ===============================================
+# LINKING SECTION (UPDATED)
+# ===============================================
+ament_target_dependencies(pointcloud_viewer
+  rclcpp
+  pcl_conversions
+  std_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  visualization_msgs
+  sensor_msgs
+  geometry_msgs
+)
+
 # Link libraries
 target_link_libraries(pointcloud_viewer
+  # OpenGL and GUI libraries
   ${OPENGL_LIBRARIES}
   glfw
-  ${PCL_LIBRARIES}
-  ${rclcpp_LIBRARIES}
-  ${pcl_conversions_LIBRARIES}
-  ${std_msgs_LIBRARIES}
-  ${tf2_LIBRARIES}
-  ${tf2_ros_LIBRARIES}
-  ${tf2_geometry_msgs_LIBRARIES}
   dl  # For gl3w dynamic loading
   ${FREETYPE_LIBRARIES}
+  ${GLUT_LIBRARY}
+  
+
+  # Lanelet2
   lanelet2_core
   lanelet2_io
   lanelet2_projection
-  lanelet2_traffic_rules
   lanelet2_routing
+  lanelet2_traffic_rules
   lanelet2_validation
-  ${GLUT_LIBRARY}
-  # Mapbox GL Native libraries
-  ${MAPBOX_CORE_LIB}
-  ${MAPBOX_CSSCOLORPARSER_LIB}
-  ${MAPBOX_NUNICODE_LIB}
-  ${MAPBOX_PARSEDATE_LIB}
-  ${MAPBOX_SQLITE_LIB}
-
-  ${LIBUV_LIBRARIES}
+  
+  # Point cloud and math libraries
+  ${PCL_LIBRARIES}
+  
+  # Link ALL found Mapbox libraries (this should include the one with MapSnapshotter)
+  ${MAPBOX_LIBRARIES}
+  
   # System dependencies for Mapbox
+  ${LIBUV_LIBRARIES}
   ${JPEG_LIBRARIES}
   ${PNG_LIBRARIES}
   ${ZLIB_LIBRARIES}
   ${ICU_LIBRARIES}
   curl
+  
+  # System libraries
   GL
   pthread
   m

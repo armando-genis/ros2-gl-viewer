@@ -40,6 +40,13 @@ namespace guik
       // orbit
       theta -= rel[0] * 0.01f;
       phi -= rel[1] * 0.01f;
+      
+      // ✅ FIX: Normalize theta to [-π, π] to prevent floating-point drift
+      // This eliminates jumpy rotation when panning horizontally
+      while (theta > M_PI) theta -= 2.0 * M_PI;
+      while (theta < -M_PI) theta += 2.0 * M_PI;
+      
+      // Clamp phi to prevent gimbal lock
       phi = std::clamp(phi, -M_PI_2 + 0.01, M_PI_2 - 0.01);
     }
     else if (button == 2)
@@ -74,6 +81,16 @@ namespace guik
 
     glm::mat4 mat = glm::lookAt(glm::vec3(eye[0], eye[1], eye[2]), glm::vec3(center[0], center[1], center[2]), glm::vec3(0.0f, 0.0f, 1.0f));
     return Eigen::Map<Eigen::Matrix4f>(glm::value_ptr(mat));
+  }
+
+  void ArcCameraControl::setCenter(const Eigen::Vector3f& new_center)
+  {
+    center = new_center;
+  }
+
+  Eigen::Vector3f ArcCameraControl::getCenter() const
+  {
+    return center;
   }
 
 } // namespace guik

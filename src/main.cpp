@@ -8,6 +8,7 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <functional>
 
 // ImGui includes
 #include <imgui.h>
@@ -19,13 +20,14 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
-
 #include <rclcpp/serialized_message.hpp>
 #include <rclcpp/generic_subscription.hpp>
-
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/transform_stamped.h>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <sensor_msgs/msg/nav_sat_fix.hpp>
 
 // Eigen
 #include <Eigen/Core>
@@ -42,7 +44,7 @@
 #include "glk/LaneletLoader.hpp"
 #include "glk/modelUpload.hpp"
 #include "glk/ThickLines.hpp"
-#include <glk/MapboxRenderer.hpp>
+
 
 #include <guik/gl_canvas.hpp>
 #include <guik/camera_control.hpp>
@@ -58,6 +60,8 @@
 #include <regex>
 
 #include <stb_image.h>
+
+#include "glk/MapBoxRendering.hpp"
 
 static Eigen::Isometry3f toEigen(const geometry_msgs::msg::Transform &t)
 {
@@ -88,18 +92,28 @@ struct CloudTopic
     size_t num_points = 0;
 };
 
+struct MarkerArrayTopic
+{
+    std::string topic_name;
+    std::string frame_id;
+    rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr sub;
+    visualization_msgs::msg::MarkerArray::SharedPtr marker_array;
+    Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
+    std::chrono::steady_clock::time_point last_update;
+};
+
 class Ros2GLViewer : public guik::Application
 {
 public:
     Ros2GLViewer(std::shared_ptr<rclcpp::Node> node) : guik::Application(), node_(node)
     {
         std::cout << "Basic Viewer Application initialized" << std::endl;
+        // Initialize active camera to right camera by default
+        active_camera_ = &right_camera_control_;
+
         // Initialize TF2
-        // tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock(), tf2::durationFromSec(10.0));
-
-        // tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
-        tf_initialized_ = false;
+        tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock(), tf2::durationFromSec(10.0));
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         // Start ROS2 spinning thread
         last_topic_refresh_ = std::chrono::steady_clock::now() - topic_refresh_interval_ * 2;
@@ -113,13 +127,7 @@ public:
 
     ~Ros2GLViewer()
     {
-        // Cleanup
-        should_exit_ = true;
-        if (ros_thread_.joinable())
-        {
-            ros_thread_.join();
-        }
-        rclcpp::shutdown();
+
         text_renderer_.cleanupTextRendering();
         // Cleanup GLB shader
         if (glb_shader_program_ != 0)
@@ -135,14 +143,22 @@ public:
             }
         }
 
-        mapbox_.reset();         // <-- add this if you haven’t
-        mesh_glb_loaded = false; // your existing cleanup
-        mesh_map_loaded = false;
-
-        mapbox_should_exit_.store(true);
-        if (mapbox_thread_.joinable())
+        // Cleanup ROS2
+        should_exit_ = true;
+        if (ros_thread_.joinable())
         {
-            mapbox_thread_.join();
+            ros_thread_.join();
+        }
+        rclcpp::shutdown();
+
+        // Cleanup TF2
+        if (tf_buffer_ != nullptr)
+        {
+            tf_buffer_->clear();
+        }
+        if (tf_listener_ != nullptr)
+        {
+            tf_listener_->~TransformListener();
         }
     }
 
@@ -161,7 +177,7 @@ public:
         style.DisabledAlpha = 0.5f;                     // Alpha for disabled items
     }
 
-    // Mouse‐button → camera_control_.mouse()
+    // Mouse‐button → active_camera_.mouse()
     static void MouseButtonCallback(GLFWwindow *w, int button, int action, int mods)
     {
         ImGui_ImplGlfw_MouseButtonCallback(w, button, action, mods);
@@ -172,10 +188,28 @@ public:
         double x, y;
         glfwGetCursorPos(w, &x, &y);
         bool down = (action != GLFW_RELEASE);
-        self->camera_control_.mouse({int(x), int(y)}, button, down);
+        
+        // Don't handle camera movement if we're dragging the splitter
+        if (self->is_dragging_splitter_) {
+            return;
+        }
+        
+        // Determine which camera to use based on mouse position
+        if (self->split_screen_mode_) {
+            int split_x = static_cast<int>(self->framebuffer_size().x() * self->split_ratio_);
+            if (x < split_x) {
+                self->active_camera_ = &self->left_camera_control_;
+            } else {
+                self->active_camera_ = &self->right_camera_control_;
+            }
+        } else {
+            self->active_camera_ = &self->right_camera_control_;
+        }
+        
+        self->active_camera_->mouse({int(x), int(y)}, button, down);
     }
 
-    // Key → camera_control_.key()
+    // Key → active_camera_.key()
     static void KeyCallback(GLFWwindow *w, int key, int sc, int action, int mods)
     {
         ImGui_ImplGlfw_KeyCallback(w, key, sc, action, mods);
@@ -185,15 +219,34 @@ public:
         if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT)
         {
             auto self = static_cast<Ros2GLViewer *>(glfwGetWindowUserPointer(w));
+            
+            // Don't handle camera movement if we're dragging the splitter
+            if (self->is_dragging_splitter_) {
+                return;
+            }
+            
             double x, y;
             glfwGetCursorPos(w, &x, &y);
             bool down = (action != GLFW_RELEASE);
+            
+            // Determine which camera to use based on mouse position
+            if (self->split_screen_mode_) {
+                int split_x = static_cast<int>(self->framebuffer_size().x() * self->split_ratio_);
+                if (x < split_x) {
+                    self->active_camera_ = &self->left_camera_control_;
+                } else {
+                    self->active_camera_ = &self->right_camera_control_;
+                }
+            } else {
+                self->active_camera_ = &self->right_camera_control_;
+            }
+            
             // treat shift+drag as middle-button pan
-            self->camera_control_.mouse({int(x), int(y)}, 2, down);
+            self->active_camera_->mouse({int(x), int(y)}, 2, down);
         }
     }
 
-    // Cursor movement → camera_control_.drag()
+    // Cursor movement → active_camera_.drag()
     static void CursorPosCallback(GLFWwindow *w, double x, double y)
     {
         ImGui_ImplGlfw_CursorPosCallback(w, x, y);
@@ -201,10 +254,29 @@ public:
         if (io.WantCaptureMouse)
             return;
         auto self = static_cast<Ros2GLViewer *>(glfwGetWindowUserPointer(w));
+        
+        // Don't handle camera movement if we're dragging the splitter
+        if (self->is_dragging_splitter_) {
+            return;
+        }
+        
         bool leftDown = (glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
         bool midDown = (glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         bool shiftDown = (glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
                           glfwGetKey(w, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+        
+        // Determine which camera to use based on mouse position
+        if (self->split_screen_mode_) {
+            int split_x = static_cast<int>(self->framebuffer_size().x() * self->split_ratio_);
+            if (x < split_x) {
+                self->active_camera_ = &self->left_camera_control_;
+            } else {
+                self->active_camera_ = &self->right_camera_control_;
+            }
+        } else {
+            self->active_camera_ = &self->right_camera_control_;
+        }
+        
         int btn = -1;
         if (shiftDown && leftDown)
             btn = 2; // pan
@@ -213,10 +285,10 @@ public:
         else if (midDown)
             btn = 2; // pan
         if (btn >= 0)
-            self->camera_control_.drag({int(x), int(y)}, btn);
+            self->active_camera_->drag({int(x), int(y)}, btn);
     }
 
-    // Scroll wheel → camera_control_.scroll()
+    // Scroll wheel → active_camera_.scroll()
     static void ScrollCallback(GLFWwindow *w, double dx, double dy)
     {
         ImGui_ImplGlfw_ScrollCallback(w, dx, dy);
@@ -224,7 +296,27 @@ public:
         if (io.WantCaptureMouse)
             return;
         auto self = static_cast<Ros2GLViewer *>(glfwGetWindowUserPointer(w));
-        self->camera_control_.scroll({float(dx), float(dy)});
+        
+        // Don't handle camera movement if we're dragging the splitter
+        if (self->is_dragging_splitter_) {
+            return;
+        }
+        
+        // Determine which camera to use based on mouse position
+        double x, y;
+        glfwGetCursorPos(w, &x, &y);
+        if (self->split_screen_mode_) {
+            int split_x = static_cast<int>(self->framebuffer_size().x() * self->split_ratio_);
+            if (x < split_x) {
+                self->active_camera_ = &self->left_camera_control_;
+            } else {
+                self->active_camera_ = &self->right_camera_control_;
+            }
+        } else {
+            self->active_camera_ = &self->right_camera_control_;
+        }
+        
+        self->active_camera_->scroll({float(dx), float(dy)});
     }
 
     bool init(const char *window_name, const Eigen::Vector2i &size, const char *glsl_version = "#version 330") override
@@ -287,6 +379,12 @@ public:
         }
         std::cout << green << "Successfully initialized GLB shader" << reset << std::endl;
 
+        if (!initMapboxMap())
+        {
+            std::cerr << "Failed to initialize Mapbox map" << std::endl;
+            // return false;
+        }
+ 
         // Load dock icon textures
         for (auto &icon : dock_icons_)
         {
@@ -300,66 +398,45 @@ public:
             }
         }
 
-        {
-            const int fb_w = framebuffer_size().x();
-            const int fb_h = framebuffer_size().y();
-            try
-            {
-                mapbox_.reset(new MapboxRenderer(fb_w, fb_h, mapbox_token_, /*pixelRatio=*/1.0f));
-                mapbox_->setStyle(map_style_);
-                mapbox_->setMapCenter(40.7589, -73.9851);
-                mapbox_->setZoom(15.0);
-                mapbox_->setBearing(map_bearing_);
-                mapbox_->setPitch(map_pitch_);
-                mapbox_enabled_ = true; // or leave false and let the UI toggle it on
-                last_mapbox_render_ = std::chrono::steady_clock::now() - mapbox_update_period_ * 2;
-                std::cout << "[Mapbox] initialized at " << fb_w << "x" << fb_h << std::endl;
-
-                startMapboxThread();
-                std::cout << "[Mapbox] rendering thread started" << std::endl;
-            }
-            catch (const std::exception &e)
-            {
-                std::cerr << "[Mapbox] init failed: " << e.what() << std::endl;
-                mapbox_.reset();
-                mapbox_enabled_ = false;
-            }
-        }
-
         return true;
     }
 
     void draw_ui() override
     {
-
+        
         if (!rclcpp::ok())
         {
             close(); // tells guik::Application to stop its run loop
             return;
         }
-
         // get the current time
         auto now = std::chrono::steady_clock::now();
         // get the tf based on the frame
         update_tf_transforms();
 
         // Topic hz
-        updateTopicFrequencies(now);
-        // Check if we need to refresh
+        {
+            std::lock_guard<std::mutex> lock(topics_mutex_);
+            // Just clean up old entries, Hz is already calculated in callback
+            auto cutoff = now - std::chrono::seconds(5); // Clean up old topic data
+            for (auto it = topic_message_times_.begin(); it != topic_message_times_.end();) {
+                if (it->second.empty() || it->second.back() < cutoff) {
+                    it = topic_message_times_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        // Check if we need to refresh the topic list
         if (now - last_topic_refresh_ > topic_refresh_interval_)
         {
             refresh_topic_list();
         }
-
+        // Check if we need to refresh the frame list
         if (now - last_frame_refresh_ > frame_refresh_interval_)
         {
             refresh_frame_list();
         }
-
-        drawMacOSDock();
-        drawTopicsPopup();
-        drawFramesPopup();
-        drawModelsPopup();
 
         // Show main canvas settings
         main_canvas_->draw_ui();
@@ -379,15 +456,85 @@ public:
         }
         ImGui::Text("Memory: %zu MB", last_memory_check_);
 
+
+        // ============================================
+        // Split-screen mode control
+        // ============================================
         ImGui::Separator();
+        ImGui::Text("Display Mode:");
+        if (ImGui::Checkbox("Split Screen Mode", &split_screen_mode_)) {
+            std::cout << "Split screen mode: " << (split_screen_mode_ ? "ON" : "OFF") << std::endl;
+        }
+        if (split_screen_mode_) {
+            ImGui::Text("  Left: Map | Right: PCD/Meshes/Lanelet");
+            
+            // Split ratio control
+            ImGui::Separator();
+            ImGui::Text("Split Control:");
+            ImGui::SliderFloat("Split Ratio", &split_ratio_, 0.05f, 0.95f, "%.2f");
+            ImGui::SameLine();
+            if (ImGui::Button("Reset to 50/50")) {
+                split_ratio_ = 0.5f;
+                std::cout << "🔄 Split ratio reset to 50/50" << std::endl;
+            }
+            
+            // Show current split percentages
+            int left_percent = static_cast<int>(split_ratio_ * 100);
+            int right_percent = 100 - left_percent;
+            ImGui::Text("Current split: %d%% / %d%%", left_percent, right_percent);
+            
+            // Camera controls for split-screen mode
+            ImGui::Separator();
+            ImGui::Text("Camera Controls:");
+            
+            if (ImGui::Button("Reset Left Camera (Map)")) {
+                left_camera_control_ = guik::ArcCameraControl();
+                std::cout << "🔄 Left camera (map) reset" << std::endl;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset Right Camera (3D)")) {
+                right_camera_control_ = guik::ArcCameraControl();
+                std::cout << "🔄 Right camera (3D) reset" << std::endl;
+            }
+            
+            // Show which camera is currently active
+            if (active_camera_ == &left_camera_control_) {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Active: Left Camera (Map)");
+            } else {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Active: Right Camera (3D)");
+            }
+            
+            ImGui::Text("Tip: Click in left/right half to control that camera");
+            ImGui::Text("Tip: Drag the circular handle to resize split");
+        } else {
+            ImGui::Text("  Single view: All content together");
+            ImGui::Text("  Using Right Camera for all content");
+        }
+
+        // ============================================
+        // Mapbox map status
+        // ============================================
+        ImGui::Separator();
+        ImGui::Text("Mapbox Map Status:");
+        if (map_snapshotter_) {
+            ImGui::Text("  Loading: %s", map_snapshotter_->isLoading() ? "Yes" : "No");
+            ImGui::Text("  Ready: %s", map_snapshotter_->isReady() ? "Yes" : "No");
+            ImGui::Text("  Texture: %s", map_snapshotter_->hasValidTexture() ? "Valid" : "Invalid");
+            ImGui::Text("  Pending: %s", map_snapshotter_->hasPendingTexture() ? "Yes" : "No");
+            ImGui::Text("  Tile Geometry: %zu loaded", map_snapshotter_->getLoadedGeometryCount());
+        } else {
+            ImGui::Text("  Not initialized");
+        }
+
+        // ============================================
+        // TF Frames
+        // ============================================
+        ImGui::Separator();
+        ImGui::Text("TF Frames: %zu", frame_transforms_.size());
         if (ImGui::Button("Reset TF Buffer"))
         {
             resetTFBuffer();
         }
-
-        ImGui::SameLine();
-        ImGui::Text("TF Frames: %zu", frame_transforms_.size());
-
         ImGui::Separator();
 
         if (ImGui::Button("Select Reference Frame"))
@@ -417,6 +564,7 @@ public:
         }
 
         ImGui::Separator();
+
 
         // Button to toggle Topics window
         if (ImGui::Button("Show ROS2 Topics"))
@@ -464,8 +612,8 @@ public:
                     ImVec2 hz_text_size = ImGui::CalcTextSize(hz_text);
                     float line_height = ImGui::GetTextLineHeight();
 
-                    // Use consistent height for all elements
-                    float element_height = std::max(line_height, circle_radius * 2);
+                    // Use consistent height for all elements (increased to accommodate topic type)
+                    float element_height = std::max(line_height * 2.2f, circle_radius * 2); // Increased height for type display
 
                     // Store initial cursor position for the row
                     ImVec2 row_start = ImGui::GetCursorScreenPos();
@@ -541,24 +689,201 @@ public:
                         {topic_name_x + 4.0f, topic_name_y}, // Small left padding
                         is_selected ? IM_COL32(255, 255, 255, 255) : ImGui::GetColorU32(ImGuiCol_Text),
                         name.c_str());
+                    
+                    // Draw topic type below the name (smaller text)
+                    auto type_it = topic_types_.find(name);
+                    if (type_it != topic_types_.end()) {
+                        std::string type_short = type_it->second;
+                        // Shorten common ROS2 message types for display
+                        if (type_short.find("sensor_msgs/msg/PointCloud2") != std::string::npos) {
+                            type_short = "PointCloud2";
+                        } else if (type_short.find("sensor_msgs/msg/NavSatFix") != std::string::npos) {
+                            type_short = "NavSatFix";
+                        } else if (type_short.find("visualization_msgs/msg/MarkerArray") != std::string::npos) {
+                            type_short = "MarkerArray";
+                        } else if (type_short.find("geometry_msgs/msg/PoseStamped") != std::string::npos) {
+                            type_short = "PoseStamped";
+                        } else if (type_short.find("nav_msgs/msg/OccupancyGrid") != std::string::npos) {
+                            type_short = "OccupancyGrid";
+                        } else {
+                            // Extract just the message name from the full type
+                            size_t last_slash = type_short.find_last_of('/');
+                            if (last_slash != std::string::npos) {
+                                type_short = type_short.substr(last_slash + 1);
+                            }
+                        }
+                        
+                        ImGui::GetWindowDrawList()->AddText(
+                            {topic_name_x + 4.0f, topic_name_y + line_height + 2.0f}, // Below the topic name
+                            IM_COL32(150, 150, 150, 200), // Gray color for type
+                            type_short.c_str());
+                    }
                 }
             }
             ImGui::EndChild();
 
             if (selected_topic_idx_ >= 0 && selected_topic_idx_ < (int)topic_names_.size())
             {
-                ImGui::Text("Subscribe to:");
-                ImGui::SameLine();
-                if (ImGui::Button("+ Add"))
-                {
-                    addPointCloudTopic(topic_names_[selected_topic_idx_]);
+                const std::string& selected_topic = topic_names_[selected_topic_idx_];
+                auto type_it = topic_types_.find(selected_topic);
+                std::string topic_type = (type_it != topic_types_.end()) ? type_it->second : "unknown";
+                
+                // Determine button text and action based on topic type
+                std::string button_text = "+ Subscribe";
+                std::string action_type = "unknown";
+                
+                if (topic_type.find("sensor_msgs/msg/PointCloud2") != std::string::npos) {
+                    button_text = "+ Add PointCloud";
+                    action_type = "pointcloud";
+                } else if (topic_type.find("sensor_msgs/msg/NavSatFix") != std::string::npos) {
+                    button_text = "+ Add GPS";
+                    action_type = "gps";
+                } else if (topic_type.find("visualization_msgs/msg/MarkerArray") != std::string::npos) {
+                    button_text = "+ Add MarkerArray";
+                    action_type = "markerarray";
+                } else if (topic_type.find("geometry_msgs/msg/PoseStamped") != std::string::npos) {
+                    button_text = "+ Add Pose";
+                    action_type = "pose";
+                } else if (topic_type.find("nav_msgs/msg/OccupancyGrid") != std::string::npos) {
+                    button_text = "+ Add OccupancyGrid";
+                    action_type = "occupancygrid";
+                } else {
+                    button_text = "+ Add Generic";
+                    action_type = "generic";
                 }
+                
+                ImGui::Text("Subscribe to: %s", selected_topic.c_str());
+                ImGui::Text("Type: %s", topic_type.c_str());
+                ImGui::SameLine();
+                if (ImGui::Button(button_text.c_str()))
+                {
+                    std::cout << green << "Adding subscription for topic: " << selected_topic 
+                              << " (type: " << action_type << ")" << reset << std::endl;
+                    
+                    // Call appropriate subscription function based on type
+                    if (action_type == "pointcloud") {
+                        addPointCloudTopic(selected_topic);
+                    } else if (action_type == "gps") {
+                        addGPSTopic(selected_topic);
+                    } else if (action_type == "markerarray") {
+                        addMarkerArrayTopic(selected_topic);
+                    } else if (action_type == "pose") {
+                        // addPoseTopic(selected_topic);
+                    } else if (action_type == "occupancygrid") {
+                        // addOccupancyGridTopic(selected_topic);
+                    } else {
+                        // addGenericTopic(selected_topic);
+                    }
+                }
+                ImGui::SameLine();
                 if (ImGui::Button("- Remove"))
                 {
-                    std::cout << red << "Removing topic: " << topic_names_[selected_topic_idx_] << reset << std::endl;
-                    removePointCloudTopic(topic_names_[selected_topic_idx_]);
+                    std::cout << red << "Removing topic: " << selected_topic << reset << std::endl;
+                    removePointCloudTopic(selected_topic);
+                    // removeMarkerArrayTopic(selected_topic);
                     selected_topic_idx_ = -1;
                 }
+            }
+        }
+
+        // Show currently subscribed marker array topics
+        {
+            std::lock_guard lk(marker_array_topics_mutex_);
+            if (!marker_array_topics_.empty())
+            {
+                ImGui::Separator();
+                ImGui::Text("Subscribed Marker Array Topics:");
+                for (const auto &mt : marker_array_topics_)
+                {
+                    ImGui::Text("  • %s (%zu markers)", mt->topic_name.c_str(), 
+                               mt->marker_array ? mt->marker_array->markers.size() : 0);
+                }
+            }
+        }
+
+        ImGui::Separator();
+
+
+        // ============================================
+        // Robot Mesh
+        // ============================================
+        // /workspace/models/sdv.glb
+        // /workspace/models/910.glb
+        static bool show_load_input_robot = false;
+        static char filepath_glb[256] = "";
+        static int selected_robot_frame = 0;
+
+        if (ImGui::Button("Load robot mesh"))
+            show_load_input_robot = !show_load_input_robot;
+
+        if (show_load_input_robot)
+        {
+            ImGui::InputText("model File", filepath_glb, sizeof(filepath_glb));
+            ImGui::Separator();
+            ImGui::Text("Assign to TF frame:");
+            ImGui::SameLine();
+
+            bool has = !available_frames_.empty();
+            // preview what would be loaded (or show “map”)
+            const char *preview = has
+                                      ? available_frames_[selected_robot_frame].c_str()
+                                      : "(map)";
+
+            if (has)
+            {
+                if (ImGui::BeginCombo("##robot_frames", preview))
+                {
+                    for (int i = 0; i < (int)available_frames_.size(); ++i)
+                    {
+                        bool sel = (selected_robot_frame == i);
+                        if (ImGui::Selectable(available_frames_[i].c_str(), sel))
+                            selected_robot_frame = i;
+                        if (sel)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No TF frames (using default)");
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Open"))
+            {
+                try
+                {
+
+                    if (mesh_glb_loaded)
+                    {
+                        glBindVertexArray(0); // ✅ Unbind any currently bound VAO
+                        glUseProgram(0);      // ✅ Unbind any shader program
+                        model_upload_.cleanupMesh(loaded_mesh_glb);
+                        mesh_glb_loaded = false;
+                    }
+
+                    // 1) load the mesh
+                    loaded_mesh_glb = model_upload_.loadModel(filepath_glb);
+                    mesh_glb_loaded = true;
+
+                    // 2) pick the frame based on your index (or "map" if none)
+                    const std::string frame_id = has
+                                                     ? available_frames_[selected_robot_frame]
+                                                     : "map";
+                    loaded_mesh_glb.frame_id = frame_id;
+
+                    // 3) log
+                    std::cout << green
+                              << "Loaded robot mesh from: " << filepath_glb
+                              << " into frame: " << frame_id << " with type: " << loaded_mesh_glb.type
+                              << reset << std::endl;
+                }
+                catch (const std::exception &e)
+                {
+                    std::cerr << "GLB load error: " << e.what() << std::endl;
+                }
+                show_load_input_robot = false;
             }
         }
 
@@ -657,140 +982,18 @@ public:
             }
         }
 
-        ImGui::Separator();
-
-        // /workspace/models/sdv.ply
-
-        // /workspace/models/drift.glb
-        // /workspace/models/buggy.glb
-        // /workspace/models/formula_uno_car_rot.glb
-        // /workspace/models/formula_uno_car.glb
-
-        static bool show_load_input_robot = false;
-        static char filepath_glb[256] = "";
-        static int selected_robot_frame = 0;
-
-        if (ImGui::Button("Load robot mesh"))
-            show_load_input_robot = !show_load_input_robot;
-
-        if (show_load_input_robot)
-        {
-            ImGui::InputText("model File", filepath_glb, sizeof(filepath_glb));
-            ImGui::Separator();
-            ImGui::Text("Assign to TF frame:");
-            ImGui::SameLine();
-
-            bool has = !available_frames_.empty();
-            // preview what would be loaded (or show “map”)
-            const char *preview = has
-                                      ? available_frames_[selected_robot_frame].c_str()
-                                      : "(map)";
-
-            if (has)
-            {
-                if (ImGui::BeginCombo("##robot_frames", preview))
-                {
-                    for (int i = 0; i < (int)available_frames_.size(); ++i)
-                    {
-                        bool sel = (selected_robot_frame == i);
-                        if (ImGui::Selectable(available_frames_[i].c_str(), sel))
-                            selected_robot_frame = i;
-                        if (sel)
-                            ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
-            }
-            else
-            {
-                ImGui::TextDisabled("No TF frames (using default)");
-            }
-
-            ImGui::SameLine();
-            if (ImGui::Button("Open"))
-            {
-                try
-                {
-
-                    if (mesh_glb_loaded)
-                    {
-                        glBindVertexArray(0); // ✅ Unbind any currently bound VAO
-                        glUseProgram(0);      // ✅ Unbind any shader program
-                        model_upload_.cleanupMesh(loaded_mesh_glb);
-                        mesh_glb_loaded = false;
-                    }
-
-                    // 1) load the mesh
-                    loaded_mesh_glb = model_upload_.loadModel(filepath_glb);
-                    mesh_glb_loaded = true;
-
-                    // 2) pick the frame based on your index (or "map" if none)
-                    const std::string frame_id = has
-                                                     ? available_frames_[selected_robot_frame]
-                                                     : "map";
-                    loaded_mesh_glb.frame_id = frame_id;
-
-                    // 3) log
-                    std::cout << green
-                              << "Loaded robot mesh from: " << filepath_glb
-                              << " into frame: " << frame_id << " with type: " << loaded_mesh_glb.type
-                              << reset << std::endl;
-                }
-                catch (const std::exception &e)
-                {
-                    std::cerr << "GLB load error: " << e.what() << std::endl;
-                }
-                show_load_input_robot = false;
-            }
-        }
 
         ImGui::End();
+        
+        // Render splitter bar in split-screen mode
+        if (split_screen_mode_) {
+            renderSplitterBar();
+        }
     }
 
-    // https://stackoverflow.com/questions/34866964/opengl-gllinewidth-doesnt-change-size-of-lines
-    // https://registry.khronos.org/OpenGL-Refpages/gl4/html/glLineWidth.xhtml
-    // https://docs.gl/gl4/glEnable
-    void draw_gl() override
+    // Helper method to render all 3D content (PCD, meshes, lanelet, grid, frames)
+    void render3DContent(glk::GLSLShader &shader)
     {
-        // 1) bind offscreen framebuffer
-        main_canvas_->bind();
-
-        glEnable(GL_DEPTH_TEST);
-        glEnable(GL_PROGRAM_POINT_SIZE);
-        glEnable(GL_LINE_SMOOTH);
-
-        // 2) clear & GL state
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // clear text rendering
-        text_renderer_.clearWorldText();
-
-        // 1) Compute View matrix
-        Eigen::Matrix4f view = camera_control_.view_matrix();
-
-        // 2) Compute Projection matrix manually
-        float w = float(framebuffer_size().x());
-        float h = float(framebuffer_size().y());
-        float aspect = w / h;
-        float fovY = 45.f * M_PI / 180.f;
-        float zNear = 0.01f, zFar = 1000.f;
-        float f = 1.f / std::tan(fovY / 2.f);
-
-        Eigen::Matrix4f proj = Eigen::Matrix4f::Zero();
-        proj(0, 0) = f / aspect;
-        proj(1, 1) = f;
-        proj(2, 2) = (zFar + zNear) / (zNear - zFar);
-        proj(2, 3) = (2.f * zFar * zNear) / (zNear - zFar);
-        proj(3, 2) = -1.f;
-
-        // 4) bind the shader program
-        auto &shader = *main_canvas_->shader;
-        shader.use();
-        shader.set_uniform("view_matrix", view);
-        shader.set_uniform("projection_matrix", proj);
-        model_upload_.setMatrices(view, proj);
-
         // ============================================
         // render grid
         // ============================================
@@ -806,7 +1009,6 @@ public:
         // ============================================
         // render coordinate frames
         // ============================================
-
         if (show_tf_frames_)
         {
             std::lock_guard lk(tf_mutex_);
@@ -819,15 +1021,13 @@ public:
             float axis_thickness = 0.03f;
 
             // First, draw the fixed frame at origin (identity transform)
-            if (!fixed_frame_.empty())
-            {
-                Eigen::Isometry3f identity = Eigen::Isometry3f::Identity();
-                drawThickCoordinateFrame(shader, cube, identity, axis_length, axis_thickness);
 
-                // Add fixed frame name label at origin
-                Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
-                text_renderer_.addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
-            }
+            Eigen::Isometry3f identity = Eigen::Isometry3f::Identity();
+            drawThickCoordinateFrame(shader, cube, identity, axis_length, axis_thickness);
+
+            // Add fixed frame name label at origin
+            Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
+            text_renderer_.addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
 
             for (auto &p : frame_transforms_)
             {
@@ -840,18 +1040,54 @@ public:
             }
         }
 
-        // ✅ IMPORTANT: Rebind main shader before point clouds
-        shader.use();
-        shader.set_uniform("view_matrix", view);
-        shader.set_uniform("projection_matrix", proj);
+        // ============================================
+        // render PCD point cloud
+        // ============================================
+        if (pcd_loader_.isLoaded() || pcd_loader_.getPointCount() != 0)
+        {
+            pcd_loader_.renderpcl(shader, tf_mutex_, frame_transforms_);
+        }
 
+        // ============================================
+        // render meshes
+        // ============================================
+        if (mesh_map_loaded)
+        {
+            model_upload_.renderMesh(loaded_mesh_map, shader, tf_mutex_, frame_transforms_);
+        }
+
+        if (mesh_glb_loaded && loaded_mesh_glb.type == 0) // 0 = GLB type
+        {
+            model_upload_.renderGLBMesh(loaded_mesh_glb, glb_shader_program_, tf_mutex_, frame_transforms_);
+            
+            // ✅ CRITICAL: Re-bind the main shader after GLB rendering
+            // GLB uses a custom shader program, so we must restore the main shader
+            // before rendering other content (point clouds, lanelet, etc.)
+            shader.use();
+        }
+
+        if (mesh_glb_loaded && loaded_mesh_glb.type == 1) // 1 = GLTF type
+        {
+            model_upload_.renderMesh(loaded_mesh_glb, shader, tf_mutex_, frame_transforms_);
+        }
+
+        // ============================================
+        // render lanelet
+        // ============================================
+        if (lanelet_loader_.isLoaded())
+        {
+            lanelet_loader_.mapLines(shader);
+            lanelet_loader_.crosswalks(shader);
+            lanelet_loader_.stripes(shader);
+        }
         // ============================================
         // render point clouds ros2 topics
         // ============================================
         {
             std::lock_guard lk(cloud_topics_mutex_);
-            // set uniform color-mode to “flat color”
-            shader.set_uniform("color_mode", 0);
+            // set uniform color-mode to "flat color" and material color to white
+            shader.set_uniform("color_mode", 1);  // Use flat color mode
+            shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f)); // White color
 
             shader.set_uniform("point_scale", 0.0f); // NO fall-off
 
@@ -924,111 +1160,310 @@ public:
                 glBindVertexArray(0);
             }
         }
-        // ============================================
-        // render PCD point cloud
-        // ============================================
-        if (pcd_loader_.isLoaded() || pcd_loader_.getPointCount() != 0)
-        {
-            pcd_loader_.renderpcl(shader, tf_mutex_, frame_transforms_);
-        }
-        // ============================================
-        // render meshes
-        // ============================================
-        if (mesh_map_loaded)
-        {
-            model_upload_.renderMesh(loaded_mesh_map, shader, tf_mutex_, frame_transforms_);
-        }
+    }
 
-        if (mesh_glb_loaded && loaded_mesh_glb.type == 0) // 0 = GLB type
-        {
-            model_upload_.renderGLBMesh(loaded_mesh_glb, glb_shader_program_, tf_mutex_, frame_transforms_);
-        }
+    // https://stackoverflow.com/questions/34866964/opengl-gllinewidth-doesnt-change-size-of-lines
+    // https://registry.khronos.org/OpenGL-Refpages/gl4/html/glLineWidth.xhtml
+    // https://docs.gl/gl4/glEnable
+    void draw_gl() override
+    {
+        // 1) bind offscreen framebuffer
+        main_canvas_->bind();
 
-        if (mesh_glb_loaded && loaded_mesh_glb.type == 1) // 1 = GLTF type
-        {
-            model_upload_.renderMesh(loaded_mesh_glb, shader, tf_mutex_, frame_transforms_);
-        }
-        // ============================================
-        // render lanelet2 map
-        // ============================================
-        if (lanelet_loader_.isLoaded())
-        {
-            lanelet_loader_.mapLines(shader);
-            lanelet_loader_.crosswalks(shader);
-            lanelet_loader_.stripes(shader);
-        }
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_PROGRAM_POINT_SIZE);
+        glEnable(GL_LINE_SMOOTH);
 
-        // === Mapbox: update texture at ~10 Hz then draw ===
-        if (mapbox_ && mapbox_enabled_)
-        {
-            mapbox_->uploadLatestPixelsToTexture();
+        // 2) clear & GL state
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            // ✅ ADD DEBUG INFO
-            static int debug_counter = 0;
-            if (++debug_counter % 60 == 0)
-            { // Every ~1 second at 60fps
-                std::cout << "[Mapbox] Drawing map at position: "
-                          << map_pos_.transpose()
-                          << ", size: " << map_size_ << std::endl;
+        // clear text rendering
+        text_renderer_.clearWorldText();
+
+        // Get screen dimensions
+        auto fb_size = framebuffer_size();
+        float w = float(fb_size.x());
+        float h = float(fb_size.y());
+        
+        // Handle splitter interaction
+        handleSplitterInteraction();
+        
+        // Calculate dynamic split based on split_ratio_
+        int left_w = static_cast<int>(w * split_ratio_);
+        int right_w = fb_size.x() - left_w;
+        float left_w_f = float(left_w);
+        float right_w_f = float(right_w);
+        
+        // 1) Compute View matrices for each viewport
+        Eigen::Matrix4f left_view = left_camera_control_.view_matrix();
+        Eigen::Matrix4f right_view = right_camera_control_.view_matrix();
+
+        // 2) Compute Projection matrix
+        float fovY = 45.f * M_PI / 180.f;
+        float zNear = 0.01f, zFar = 1000.f;
+        float f = 1.f / std::tan(fovY / 2.f);
+
+        if (split_screen_mode_) {
+            // Split-screen mode: two separate viewports with dynamic split
+            float aspect_left = left_w_f / h;
+            float aspect_right = right_w_f / h;
+
+            // Left projection matrix (for map)
+            Eigen::Matrix4f proj_left = Eigen::Matrix4f::Zero();
+            proj_left(0, 0) = f / aspect_left;
+            proj_left(1, 1) = f;
+            proj_left(2, 2) = (zFar + zNear) / (zNear - zFar);
+            proj_left(2, 3) = (2.f * zFar * zNear) / (zNear - zFar);
+            proj_left(3, 2) = -1.f;
+
+            // Right projection matrix (for PCD/meshes/lanelet)
+            Eigen::Matrix4f proj_right = Eigen::Matrix4f::Zero();
+            proj_right(0, 0) = f / aspect_right;
+            proj_right(1, 1) = f;
+            proj_right(2, 2) = (zFar + zNear) / (zNear - zFar);
+            proj_right(2, 3) = (2.f * zFar * zNear) / (zNear - zFar);
+            proj_right(3, 2) = -1.f;
+
+            // ============================================
+            // LEFT VIEWPORT: Map only
+            // ============================================
+            glViewport(0, 0, left_w, (GLsizei)fb_size.y());
+
+            // Clear left viewport completely (both color and depth)
+            glScissor(0, 0, left_w, (GLsizei)fb_size.y());
+            glEnable(GL_SCISSOR_TEST);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDisable(GL_SCISSOR_TEST);
+
+            // Ensure depth testing is properly set up for this viewport
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+
+            // Render Mapbox map on left side
+            if (map_snapshotter_) {
+                // Always try to update texture first (this will upload pending data)
+                map_snapshotter_->updateTexture();
+                
+                // Now check if we have a valid texture to render
+                if (map_snapshotter_->hasValidTexture()) {
+                    // Convert Eigen matrices to GLM matrices for the map renderer
+                    glm::mat4 glm_view = glm::mat4(1.0f);
+                    glm::mat4 glm_proj = glm::mat4(1.0f);
+                    
+                                    // Convert Eigen to GLM (column-major order)
+                for (int i = 0; i < 4; ++i) {
+                    for (int j = 0; j < 4; ++j) {
+                        glm_view[j][i] = left_view(i, j);
+                        glm_proj[j][i] = proj_left(i, j);
+                    }
+                }
+                    map_snapshotter_->renderMap(glm_proj, glm_view);
+                    map_snapshotter_->renderCircleOverlay(glm_proj, glm_view);
+                }
             }
 
-            GLboolean depthWas = glIsEnabled(GL_DEPTH_TEST);
-            glDisable(GL_DEPTH_TEST);
-            mapbox_->drawMap(view, proj, map_pos_, map_size_, map_rotation_z_);
-            if (depthWas)
-                glEnable(GL_DEPTH_TEST);
-        }
+            // Clear depth buffer between viewports to prevent cross-contamination
+            glClear(GL_DEPTH_BUFFER_BIT);
 
-        // render text
-        text_renderer_.renderWorldText(view, proj);
+            // ============================================
+            // RIGHT VIEWPORT: PCD, meshes, lanelet, grid, frames
+            // ============================================
+            glViewport(left_w, 0, right_w, (GLsizei)fb_size.y());
+            
+            // Clear right viewport completely (both color and depth)
+            glScissor(left_w, 0, right_w, (GLsizei)fb_size.y());
+            glEnable(GL_SCISSOR_TEST);
+            glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDisable(GL_SCISSOR_TEST);
+            
+            // Ensure depth testing is properly set up for this viewport
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+
+            // 4) bind the shader program for right viewport
+            auto &shader = *main_canvas_->shader;
+            shader.use();
+            shader.set_uniform("view_matrix", right_view);
+            shader.set_uniform("projection_matrix", proj_right);
+            model_upload_.setMatrices(right_view, proj_right);
+
+            // Render all 3D content on right side
+            render3DContent(shader);
+
+            // Ensure depth buffer is properly written for this viewport
+            glFlush();
+            
+            // render text
+            text_renderer_.renderWorldText(right_view, proj_right);
+
+
+        } else {
+            // Single view mode: all content together
+            float aspect = w / h;
+            Eigen::Matrix4f proj = Eigen::Matrix4f::Zero();
+            proj(0, 0) = f / aspect;
+            proj(1, 1) = f;
+            proj(2, 2) = (zFar + zNear) / (zNear - zFar);
+            proj(2, 3) = (2.f * zFar * zNear) / (zNear - zFar);
+            proj(3, 2) = -1.f;
+
+            // Set full viewport
+            glViewport(0, 0, fb_size.x(), fb_size.y());
+
+            // 4) bind the shader program
+            auto &shader = *main_canvas_->shader;
+            shader.use();
+            shader.set_uniform("view_matrix", right_view);
+            shader.set_uniform("projection_matrix", proj);
+            model_upload_.setMatrices(right_view, proj);
+
+            // Render all 3D content
+            render3DContent(shader);
+
+            // render text
+            text_renderer_.renderWorldText(right_view, proj);
+        }
 
         // 9) unbind & blit
         main_canvas_->unbind();
         main_canvas_->render_to_screen();
     }
 
-    void startMapboxThread()
+    void framebuffer_size_callback(const Eigen::Vector2i &size) override
     {
-        mapbox_thread_ = std::thread([this]()
-                                     {
-        std::cout << "[Mapbox Thread] 🚀 Thread started" << std::endl;
+        // Call parent implementation
+        guik::Application::framebuffer_size_callback(size);
         
-        while (!mapbox_should_exit_.load()) {
-            // ✅ DEBUG ALL CONDITIONS
-            bool mapbox_exists = (mapbox_ != nullptr);
-            bool mapbox_is_enabled = mapbox_enabled_;
-            auto now = std::chrono::steady_clock::now();
-            auto time_since_last = now - last_mapbox_render_;
-            bool time_condition = (time_since_last >= mapbox_update_period_);
-            
-            // Print debug every few seconds
-            static int debug_count = 0;
-            if (++debug_count % 40 == 0) { // Every ~10 seconds
-                std::cout << "[Mapbox Thread] Status:" << std::endl;
-                std::cout << "  mapbox_ exists: " << mapbox_exists << std::endl;
-                std::cout << "  mapbox_enabled_: " << mapbox_is_enabled << std::endl;
-                std::cout << "  time_since_last: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_since_last).count() << "ms" << std::endl;
-                std::cout << "  update_period_: " << mapbox_update_period_.count() << "ms" << std::endl;
-                std::cout << "  time_condition: " << time_condition << std::endl;
-            }
-            
-            if (mapbox_exists && mapbox_is_enabled) {
-                if (time_condition) {
-                    std::cout << "[Mapbox Thread] 🎯 Calling render()..." << std::endl;
-                    mapbox_->render();  // This should trigger your debug output
-                    last_mapbox_render_ = now;
-                    std::cout << "[Mapbox Thread] ✅ render() call completed" << std::endl;
-                } else if (debug_count % 40 == 0) {
-                    std::cout << "[Mapbox Thread] ⏰ Waiting for timer..." << std::endl;
-                }
-            } else if (debug_count % 40 == 0) {
-                std::cout << "[Mapbox Thread] ❌ Conditions not met" << std::endl;
-            }
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        // Update main canvas with new size
+        if (main_canvas_) {
+            main_canvas_.reset(new guik::GLCanvas("./data", size));
         }
         
-        std::cout << "[Mapbox Thread] 🛑 Thread exiting" << std::endl; });
+        // Update Mapbox snapshotter size if it exists
+        if (map_snapshotter_) {
+            std::cout << "🔄 Updating Mapbox snapshotter size to: " << size.x() << "x" << size.y() << std::endl;
+        }
+        
+        std::cout << "📐 Window resized to: " << size.x() << "x" << size.y() << std::endl;
+    }
+
+    void handleSplitterInteraction()
+    {
+        if (!split_screen_mode_) return;
+        
+        ImGuiIO& io = ImGui::GetIO();
+        auto fb_size = framebuffer_size();
+        float w = float(fb_size.x());
+        float h = float(fb_size.y());
+        
+        // Calculate splitter position
+        float splitter_x = w * split_ratio_;
+        float splitter_left = splitter_x - splitter_width_ * 0.5f;
+        float splitter_right = splitter_x + splitter_width_ * 0.5f;
+        
+        // Check if mouse is over splitter
+        ImVec2 mouse_pos = ImGui::GetMousePos();
+        bool mouse_over_splitter = (mouse_pos.x >= splitter_left && mouse_pos.x <= splitter_right && 
+                                   mouse_pos.y >= 0 && mouse_pos.y <= h);
+        
+        is_hovering_splitter_ = mouse_over_splitter;
+        
+        // Handle mouse interactions
+        if (ImGui::IsMouseClicked(0) && mouse_over_splitter) {
+            is_dragging_splitter_ = true;
+        }
+        
+        if (is_dragging_splitter_) {
+            if (ImGui::IsMouseDown(0)) {
+                // Update split ratio based on mouse position
+                float new_ratio = mouse_pos.x / w;
+                split_ratio_ = std::max(0.05f, std::min(0.95f, new_ratio)); // Clamp between 5% and 95%
+            } else {
+                is_dragging_splitter_ = false;
+            }
+        }
+        
+        // Set cursor based on hover state
+        if (mouse_over_splitter || is_dragging_splitter_) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        }
+    }
+
+    void renderSplitterBar()
+    {
+        if (!split_screen_mode_) return;
+        
+        auto fb_size = framebuffer_size();
+        float w = float(fb_size.x());
+        float h = float(fb_size.y());
+        
+        // Calculate splitter position
+        float splitter_x = w * split_ratio_;
+        float splitter_left = splitter_x - splitter_width_ * 0.5f;
+        float splitter_right = splitter_x + splitter_width_ * 0.5f;
+                
+        // Use ImGui's background draw list for overlay rendering
+        ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+        
+        // Choose color based on state
+        ImU32 bar_color;
+        ImU32 handle_color;
+        
+        if (is_dragging_splitter_) {
+            bar_color = IM_COL32(184, 184, 184, 153);   // Light gray when dragging (20% lighter)
+            handle_color = IM_COL32(184, 184, 184, 153);  // Light gray handle (20% lighter)
+        } else if (is_hovering_splitter_) {
+            bar_color = IM_COL32(153, 153, 153, 153);  // Light gray when hovering
+            handle_color = IM_COL32(153, 153, 153, 153); // Light gray handle
+        } else {
+            bar_color = IM_COL32(102, 102, 102, 102);  // Dark gray normally
+            handle_color = IM_COL32(51, 51, 51, 230);   // Dark handle
+        }
+        
+        // Draw the vertical splitter bar
+        draw_list->AddRectFilled(
+            ImVec2(splitter_left, 0),
+            ImVec2(splitter_right, h),
+            bar_color
+        );
+        
+        // Draw rounded rectangle handle in the center
+        float handle_y = h * 0.5f;
+        ImVec2 handle_center(splitter_x, handle_y);
+        
+        // Define rounded rectangle dimensions
+        float handle_width = handle_radius_ * 1.2f;   // 1.0f * 1.2 = 1.2f
+        float handle_height = handle_radius_ * 2.4f;  // 2.0f * 1.2 = 2.4f
+        float corner_radius = handle_radius_ * 0.36f; // 0.3f * 1.2 = 0.36f
+        
+        ImVec2 rect_min(
+            handle_center.x - handle_width * 0.5f,
+            handle_center.y - handle_height * 0.5f
+        );
+        ImVec2 rect_max(
+            handle_center.x + handle_width * 0.5f,
+            handle_center.y + handle_height * 0.5f
+        );
+        
+        // Draw the rounded rectangle
+        draw_list->AddRectFilled(
+            rect_min,
+            rect_max,
+            handle_color,
+            corner_radius
+        );
+        
+        // Add a subtle border to the handle for better visibility
+        draw_list->AddRect(
+            rect_min,
+            rect_max,
+            IM_COL32(255, 255, 255, 100),
+            corner_radius,
+            0, 2.0f
+        );
     }
 
     void checkMemoryUsage()
@@ -1087,166 +1522,205 @@ public:
         }
     }
 
-    void ensureTFInitialized()
+    // Function to load image as OpenGL texture
+    GLuint loadImageTexture(const std::string &path)
     {
-        if (!tf_initialized_)
+        int width, height, channels;
+        unsigned char *data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+
+        if (!data)
         {
-            std::cout << "🔧 Lazy initializing TF2..." << std::endl;
-            tf_buffer_ = std::make_shared<tf2_ros::Buffer>(
-                node_->get_clock(),
-                tf2::durationFromSec(10.0));
-            tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-            tf_initialized_ = true;
-            std::cout << "✅ TF2 initialized" << std::endl;
+            // std::cerr << "Failed to load image: " << path << std::endl;
+            return 0;
+        }
+
+        // Debug: Print image info
+        std::cout << "Loaded image: " << path << std::endl;
+        std::cout << "  Resolution: " << width << "x" << height << std::endl;
+        std::cout << "  Channels: " << channels << std::endl;
+
+        GLuint texture_id;
+        glGenTextures(1, &texture_id);
+        glBindTexture(GL_TEXTURE_2D, texture_id);
+
+        // Improved texture parameters for better quality
+        if (width >= 100 || height >= 100)
+        {
+            // For larger images, use linear filtering with mipmaps
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        }
+        else
+        {
+            // For smaller images, use nearest neighbor to maintain sharpness
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        // Upload texture data
+        GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+
+        // Generate mipmaps for better scaling quality
+        if (width >= 100 || height >= 100)
+        {
+            glGenerateMipmap(GL_TEXTURE_2D);
+            std::cout << "  Generated mipmaps for better scaling" << std::endl;
+        }
+
+        stbi_image_free(data);
+
+        // Store original dimensions for better scaling decisions
+        std::cout << "  Texture ID: " << texture_id << std::endl;
+
+        return texture_id;
+    }
+
+    bool initMapboxMap()
+    {
+        try {
+            std::cout << "Starting Mapbox initialization..." << std::endl;
+            
+            // Check if we have valid framebuffer size
+            auto size = framebuffer_size();
+            if (size.x() <= 0 || size.y() <= 0) {
+                std::cerr << "Invalid framebuffer size: " << size.x() << "x" << size.y() << std::endl;
+                return false;
+            }
+            std::cout << "Framebuffer size: " << size.x() << "x" << size.y() << std::endl;
+            
+            // Create the MapSnapshotter
+            map_snapshotter_ = std::make_unique<mbgl::SimpleMapSnapshotter>(
+                mbgl::Size{static_cast<uint32_t>(size.x()), static_cast<uint32_t>(size.y())}, 
+                1.0f, 
+                "pk.eyJ1IjoiYXJtYWdlbmlzcyIsImEiOiJjbWRucWJ2enUwNHdwMm5wczE2YWU0ejZ4In0.lVcJwTwb-2n0yGo4bKeWEQ",
+                "AIzaSyDLvsW4iy1cwlRv7JGd6xp49cs60YNuyJs"
+            );
+
+            map_snapshotter_->setCircleLatLng(25.651454988788377, -100.29369354881304);
+            
+            if (!map_snapshotter_) {
+                std::cerr << "Failed to create MapSnapshotter" << std::endl;
+                return false;
+            }
+            
+            // 🆕 NEW: Set a Mapbox style URL instead of manual layers
+            std::cout << "Setting Mapbox style URL..." << std::endl;
+            map_snapshotter_->setStyleURL("mapbox://styles/mapbox/streets-v12"); // Modern streets style
+            
+            // �� NEW: Set up camera with Mapbox types - CLOSER VIEW for 3D buildings
+            std::cout << "Setting up camera with Mapbox types..." << std::endl;
+            mbgl::CameraOptions camera;
+            // 25.64843558669156, -100.29043509301644
+            float lat = 25.64843558669156;
+            float log = -100.29043509301644;
+            camera.withCenter(mbgl::LatLng{lat, log});
+            camera.withZoom(15.0); // Much closer zoom level for building details
+            camera.withPitch(0.0); // Steeper pitch to see buildings better
+            camera.withBearing(0.0);
+            map_snapshotter_->setCameraOptions(camera);
+
+            std::cout << "Setting up geographic coordinate system..." << std::endl;
+
+            // Set the geographic bounds for your map view
+            mbgl::LatLngBounds mapBounds = mbgl::LatLngBounds::hull(
+                mbgl::LatLng{lat, log},  // Southwest (southwest)
+                mbgl::LatLng{lat, log}   // Northeast (northeast)
+            );
+
+            // Update the map snapshotter with bounds
+            map_snapshotter_->setMapBounds(mapBounds);
+
+            std::cout << "✅ Geographic bounds set: " 
+                    << "N:" << mapBounds.north() << " S:" << mapBounds.south()
+                    << " E:" << mapBounds.east() << " W:" << mapBounds.west() << std::endl;
+            
+            // 🆕 NEW: Start map loading to fetch the image
+            std::cout << "Starting map loading..." << std::endl;
+            map_snapshotter_->snapshot([](std::exception_ptr error, std::vector<uint8_t> imageData, int width, int height) {
+                if (error) {
+                    std::cerr << "❌ Map loading failed" << std::endl;
+                } else {
+                    std::cout << "✅ Map loaded successfully: " << width << "x" << height << " (" << imageData.size() << " bytes)" << std::endl;
+                }
+            });
+
+            std::cout << "✅ Mapbox initialization completed successfully with style URL!" << std::endl;
+            std::cout << "   Map will load layers and sources from Mapbox servers" << std::endl;
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Mapbox initialization error: " << e.what() << std::endl;
+            return false;
+        }
+        catch (...) {
+            std::cerr << "Unknown error during Mapbox initialization" << std::endl;
+            return false;
         }
     }
 
-    void framebuffer_size_callback(const Eigen::Vector2i &size) override
+    // =================================================================================
+    //  ros2 and tf2 related functions
+    // =================================================================================
+    
+    void update_tf_transforms()
     {
-        main_canvas_->set_size(size);
-    }
 
-    void refresh_topic_list()
-    {
-        std::lock_guard<std::mutex> lock(topics_mutex_);
+        std::lock_guard<std::mutex> lock(tf_mutex_);
+        // Skip if no fixed frame selected
+        if (fixed_frame_.empty())
+            return;
 
-        // Discover all topic→types pairs
-        auto topics_and_types = node_->get_topic_names_and_types();
-
-        // Clear & rebuild the list, but only keep topics with >0 publishers
-        topic_names_.clear();
-        for (auto &kv : topics_and_types)
+        frame_transforms_.clear();
+        // Refresh transforms for each available frame
+        for (const auto &frame : available_frames_)
         {
-            const auto &name = kv.first;
-            if (node_->count_publishers(name) == 0)
-            {
-                // no one is publishing → skip
+            if (frame == fixed_frame_)
                 continue;
-            }
-            topic_names_.push_back(name);
-        }
-
-        // Prune dead subscriptions (topics that disappeared from DDS)
-        {
-            std::unordered_set<std::string> current(topic_names_.begin(),
-                                                    topic_names_.end());
-            for (auto it = subs_.begin(); it != subs_.end();)
+            try
             {
-                if (!current.count(it->first))
-                {
-                    // Topic live no longer exists
-                    last_msg_time_.erase(it->first);
-
-                    // hz topic clean
-                    topic_message_times_.erase(it->first); // Clean up frequency data
-                    topic_hz_.erase(it->first);
-
-                    it = subs_.erase(it);
-                }
-                else
-                {
-                    ++it;
-                }
+                auto tf_stamped = tf_buffer_->lookupTransform(
+                    fixed_frame_,      // target frame
+                    frame,             // source frame
+                    tf2::TimePointZero // latest
+                );
+                frame_transforms_[frame] = toEigen(tf_stamped.transform);
             }
-        }
-
-        // Create heartbeat subscriptions only for the kept topics
-        for (auto &name : topic_names_)
-        {
-            if (!subs_.count(name))
+            catch (const tf2::TransformException &)
             {
-                auto &types = topics_and_types[name];
-                if (types.empty())
-                    continue; // should never happen
-                auto type_name = types[0];
-                try
-                {
-                    auto s = node_->create_generic_subscription(
-                        name, type_name, rclcpp::QoS(1),
-                        [this, name](std::shared_ptr<rclcpp::SerializedMessage>)
-                        {
-                            std::lock_guard<std::mutex> lk(topics_mutex_);
-                            auto now = std::chrono::steady_clock::now();
-                            last_msg_time_[name] = now;
-
-                            // ROS2-like frequency tracking
-                            auto &times = topic_message_times_[name];
-                            times.push_back(now);
-
-                            // Keep window size like ROS2 (but smaller for real-time)
-                            while (times.size() > ROS2_LIKE_WINDOW_SIZE)
-                            {
-                                times.pop_front();
-                            }
-
-                            // Calculate Hz using ROS2's method
-                            if (times.size() >= 2)
-                            {
-                                auto total_duration = times.back() - times.front();
-                                auto total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(total_duration).count();
-
-                                if (total_ns > 0)
-                                {
-                                    // ROS2's algorithm: intervals / total_time
-                                    float intervals = static_cast<float>(times.size() - 1);
-                                    float total_seconds = total_ns / 1e9f;
-                                    topic_hz_[name] = intervals / total_seconds;
-                                }
-                            }
-                        });
-                    subs_[name] = s;
-                    last_msg_time_[name] = std::chrono::steady_clock::time_point{};
-                }
-                catch (const std::exception &e)
-                {
-                    // std::cerr << "Failed to create subscription for topic " << name << ": " << e.what() << std::endl;
-                }
+                // Remove on failure
+                frame_transforms_.erase(frame);
             }
         }
+        // print size of frame_transforms_
+        // std::cout << green << "TF Transforms: " << frame_transforms_.size() << reset << std::endl;
     }
 
-    // Simple function to update Hz values (call this in draw_ui)
-    void updateTopicFrequencies(std::chrono::steady_clock::time_point now)
+    void resetTFBuffer()
     {
-        std::lock_guard<std::mutex> lock(topics_mutex_);
+        std::lock_guard<std::mutex> lock(tf_mutex_);
 
-        if (topic_message_times_.empty())
-            return; // No topics to update
+        std::cout << yellow << "Resetting TF Buffer..." << reset << std::endl;
 
-        for (auto &[topic_name, times] : topic_message_times_)
-        {
-            // Remove old messages (older than 2 seconds)
-            auto cutoff = now - std::chrono::seconds(2);
-            while (!times.empty() && times.front() < cutoff)
-            {
-                times.pop_front();
-            }
+        // Clear current transforms
+        frame_transforms_.clear();
+        // Reset TF listener and buffer
+        tf_listener_.reset();
+        tf_buffer_.reset();
 
-            // Recalculate Hz
-            if (times.size() >= 2)
-            {
-                auto duration = times.back() - times.front();
-                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-                if (ms > 0)
-                {
-                    float intervals = static_cast<float>(times.size() - 1);
-                    topic_hz_[topic_name] = (intervals * 1000.0f) / ms;
-                }
-            }
-            else
-            {
-                topic_hz_[topic_name] = 0.0f;
-            }
-        }
+        tf_buffer_ = std::make_shared<tf2_ros::Buffer>(
+            node_->get_clock(),
+            tf2::durationFromSec(10.0));
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+        std::cout << green << "TF Buffer reset complete" << reset << std::endl;
     }
 
-    // reference:
-    // - https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Tf2-Main.html
-    // - https://robotics.stackexchange.com/questions/95228/how-to-get-list-of-all-tf-frames-programatically
-    // - https://wiki.ros.org/tf/TfUsingPython
     void refresh_frame_list()
     {
-        ensureTFInitialized();
 
         std::lock_guard<std::mutex>
             lock(frames_mutex_);
@@ -1326,65 +1800,123 @@ public:
         last_frame_refresh_ = std::chrono::steady_clock::now();
     }
 
-    void update_tf_transforms()
+    void refresh_topic_list()
     {
-        ensureTFInitialized();
+        std::lock_guard<std::mutex> lock(topics_mutex_);
 
-        std::lock_guard<std::mutex> lock(tf_mutex_);
-        // Skip if no fixed frame selected
-        if (fixed_frame_.empty())
-            return;
+        // Discover all topic→types pairs
+        auto topics_and_types = node_->get_topic_names_and_types();
 
-        frame_transforms_.clear();
-        // Refresh transforms for each available frame
-        for (const auto &frame : available_frames_)
+        // Clear & rebuild the list, but only keep topics with >0 publishers
+        topic_names_.clear();
+        topic_types_.clear();
+        for (auto &kv : topics_and_types)
         {
-            if (frame == fixed_frame_)
+            const auto &name = kv.first;
+            if (node_->count_publishers(name) == 0)
+            {
+                // no one is publishing → skip
                 continue;
-
-            try
-            {
-                auto tf_stamped = tf_buffer_->lookupTransform(
-                    fixed_frame_,      // target frame
-                    frame,             // source frame
-                    tf2::TimePointZero // latest
-                );
-                frame_transforms_[frame] = toEigen(tf_stamped.transform);
             }
-            catch (const tf2::TransformException &)
-            {
-                // Remove on failure
-                frame_transforms_.erase(frame);
+            topic_names_.push_back(name);
+            // Store the first type (most topics have only one type)
+            if (!kv.second.empty()) {
+                topic_types_[name] = kv.second[0];
             }
         }
 
-        // print size of frame_transforms_
-        // std::cout << green << "TF Transforms: " << frame_transforms_.size() << reset << std::endl;
+        // Prune dead subscriptions (topics that disappeared from DDS)
+        {
+            std::unordered_set<std::string> current(topic_names_.begin(),
+                                                    topic_names_.end());
+            for (auto it = subs_.begin(); it != subs_.end();)
+            {
+                if (!current.count(it->first))
+                {
+                    // Topic live no longer exists
+                    last_msg_time_.erase(it->first);
+
+                    // hz topic clean
+                    topic_message_times_.erase(it->first); // Clean up frequency data
+                    topic_hz_.erase(it->first);
+                    
+                    // Clean up topic type data
+                    topic_types_.erase(it->first);
+
+                    it = subs_.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+        }
+
+        // Create lightweight heartbeat subscriptions with minimal memory footprint
+        for (auto &name : topic_names_)
+        {
+            if (!subs_.count(name))
+            {
+                auto &types = topics_and_types[name];
+                if (types.empty())
+                    continue; // should never happen
+                auto type_name = types[0];
+                try
+                {
+                    // OPTIMIZATION 1: Use minimal QoS settings to reduce memory
+                    auto s = node_->create_generic_subscription(
+                        name, type_name, 
+                        rclcpp::QoS(1)
+                            .keep_last(1)           // Only keep 1 message
+                            .best_effort()          // Use best effort delivery
+                            .durability_volatile(), // Don't persist messages
+                        [this, name](std::shared_ptr<rclcpp::SerializedMessage> msg)
+                        {
+                            std::lock_guard<std::mutex> lk(topics_mutex_);
+                            auto now = std::chrono::steady_clock::now();
+                            last_msg_time_[name] = now;
+
+                            // FIXED: Use a proper sliding window approach for stable Hz calculation
+                            auto &times = topic_message_times_[name];
+                            times.push_back(now);
+
+                            // Keep only recent messages (last 2 seconds worth)
+                            auto cutoff = now - std::chrono::seconds(2);
+                            while (times.size() > ROS2_LIKE_WINDOW_SIZE)
+                            {
+                                times.pop_front();
+                            }
+
+                            // Calculate Hz only if we have enough samples
+                            if (times.size() >= 2)
+                            {
+                                auto duration = times.back() - times.front();
+                                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+                                if (ms > 0)
+                                {
+                                    float intervals = static_cast<float>(times.size() - 1);
+                                    topic_hz_[name] = (intervals * 1000.0f) / ms;
+                                }
+                            }
+                            else
+                            {
+                                topic_hz_[name] = 0.0f;
+                            }
+                        });
+                    subs_[name] = s;
+                    last_msg_time_[name] = std::chrono::steady_clock::time_point{};
+                }
+                catch (const std::exception &e)
+                {
+                    // std::cerr << "Failed to create subscription for topic " << name << ": " << e.what() << std::endl;
+                }
+            }
+        }
     }
 
-    void resetTFBuffer()
-    {
-        std::lock_guard<std::mutex> lock(tf_mutex_);
-
-        std::cout << yellow << "Resetting TF Buffer..." << reset << std::endl;
-
-        // Clear current transforms
-        frame_transforms_.clear();
-
-        tf_initialized_ = false;
-
-        // Reset TF listener and buffer
-        tf_listener_.reset();
-        tf_buffer_.reset();
-
-        tf_buffer_ = std::make_shared<tf2_ros::Buffer>(
-            node_->get_clock(),
-            tf2::durationFromSec(10.0));
-        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
-        std::cout << green << "TF Buffer reset complete" << reset << std::endl;
-    }
-
+    // ================================
+    // ROS2 point cloud topic  
+    // ================================
     void removePointCloudTopic(const std::string &topic)
     {
         std::lock_guard lk(cloud_topics_mutex_);
@@ -1466,1354 +1998,133 @@ public:
         }
     }
 
-    // Function to load image as OpenGL texture
-    GLuint loadImageTexture(const std::string &path)
+    // ================================
+    // ROS2 GPS topic
+    // ================================
+    void addGPSTopic(const std::string &topic)
     {
-        int width, height, channels;
-        unsigned char *data = stbi_load(path.c_str(), &width, &height, &channels, 0);
-
-        if (!data)
-        {
-            std::cerr << "Failed to load image: " << path << std::endl;
-            return 0;
-        }
-
-        // Debug: Print image info
-        std::cout << "Loaded image: " << path << std::endl;
-        std::cout << "  Resolution: " << width << "x" << height << std::endl;
-        std::cout << "  Channels: " << channels << std::endl;
-
-        GLuint texture_id;
-        glGenTextures(1, &texture_id);
-        glBindTexture(GL_TEXTURE_2D, texture_id);
-
-        // Improved texture parameters for better quality
-        if (width >= 100 || height >= 100)
-        {
-            // For larger images, use linear filtering with mipmaps
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        }
-        else
-        {
-            // For smaller images, use nearest neighbor to maintain sharpness
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        }
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-        // Upload texture data
-        GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-
-        // Generate mipmaps for better scaling quality
-        if (width >= 100 || height >= 100)
-        {
-            glGenerateMipmap(GL_TEXTURE_2D);
-            std::cout << "  Generated mipmaps for better scaling" << std::endl;
-        }
-
-        stbi_image_free(data);
-
-        // Store original dimensions for better scaling decisions
-        std::cout << "  Texture ID: " << texture_id << std::endl;
-
-        return texture_id;
-    }
-
-    void drawMacOSDock()
-    {
-        ImGuiViewport *viewport = ImGui::GetMainViewport();
-        ImVec2 viewport_size = viewport->Size;
-
-        // Dock dimensions
-        const float dock_height = 80.0f;
-        const float icon_size = 50.0f;
-        const float icon_spacing = 15.0f;
-        const float dock_padding = 15.0f;
-
-        // Performance panel dimensions
-        const float perf_panel_width = 200.0f;
-        const float panel_spacing = 20.0f;
-
-        // Calculate dock width based on number of icons
-        float dock_width = (icon_size * dock_icons_.size()) + (icon_spacing * (dock_icons_.size() - 1)) + (dock_padding * 2);
-
-        // Calculate total width of both dock and performance panel
-        float total_width = dock_width + panel_spacing + perf_panel_width;
-
-        // Position dock so the ENTIRE layout
-        ImVec2 dock_pos = ImVec2(
-            (viewport_size.x - total_width) * 0.5f, // Center the whole thing
-            viewport_size.y - dock_height - 20.0f   // 20px margin from bottom
-        );
-
-        // Set dock window properties
-        ImGui::SetNextWindowPos(dock_pos);
-        ImGui::SetNextWindowSize(ImVec2(dock_width, dock_height));
-
-        // Dock window flags
-        ImGuiWindowFlags dock_flags =
-            ImGuiWindowFlags_NoTitleBar |
-            ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoScrollbar |
-            ImGuiWindowFlags_NoSavedSettings |
-            ImGuiWindowFlags_NoFocusOnAppearing |
-            ImGuiWindowFlags_NoBringToFrontOnFocus;
-
-        // Custom dock styling
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 25.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dock_padding, dock_padding));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(icon_spacing, 0));
-
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.95f)); // Dark translucent
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
-
-        ImGui::Begin("##Dock", nullptr, dock_flags);
-
-        // Draw dock icons horizontally
-        for (size_t i = 0; i < dock_icons_.size(); ++i)
-        {
-            const auto &icon = dock_icons_[i];
-
-            if (i > 0)
-            {
-                ImGui::SameLine();
-            }
-
-            // Highlight selected icon
-            bool is_selected = (current_panel_ == icon.item);
-            if (is_selected)
-            {
-                // Selected: use the hover colors permanently
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));           // ✅ Use hover color as normal state
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.35f, 0.35f, 0.35f, 0.9f)); // ✅ Slightly lighter on hover
-            }
-            else
-            {
-                // Unselected: normal gray
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.6f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
-            }
-
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, icon_size * 0.25f);
-
-            // Create button with image or icon
-            ImGui::PushID(static_cast<int>(i));
-
-            bool clicked = false;
-
-            if (icon.texture_id != 0)
-            {
-                // manually create the same background as text buttons
-                ImVec2 button_pos = ImGui::GetCursorScreenPos();
-                ImVec2 button_size = ImVec2(icon_size, icon_size);
-
-                // Check if button is hovered
-                ImVec2 mouse_pos = ImGui::GetMousePos();
-                bool is_hovered = (mouse_pos.x >= button_pos.x && mouse_pos.x <= button_pos.x + button_size.x &&
-                                   mouse_pos.y >= button_pos.y && mouse_pos.y <= button_pos.y + button_size.y);
-
-                // Get the same colors used by regular buttons
-                ImU32 bg_color;
-                if (is_selected)
-                {
-                    // Selected: use hover-like gray colors instead of blue
-                    bg_color = is_hovered ? ImGui::GetColorU32(ImVec4(0.35f, 0.35f, 0.35f, 0.9f)) : // Slightly lighter on hover
-                                   ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.3f, 0.8f));              // Hover color as normal state
-                }
-                else
-                {
-                    bg_color = is_hovered ? ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.3f, 0.8f)) : // ButtonHovered color
-                                   ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.2f, 0.6f));           // Button color
-                }
-
-                // Draw custom background with same rounding as text buttons
-                ImGui::GetWindowDrawList()->AddRectFilled(
-                    button_pos,
-                    ImVec2(button_pos.x + button_size.x, button_pos.y + button_size.y),
-                    bg_color,
-                    icon_size * 0.25f);
-
-                // Create invisible button for click detection
-                ImGui::SetCursorScreenPos(button_pos);
-                clicked = ImGui::InvisibleButton(("##invisible_" + std::to_string(i)).c_str(), button_size);
-
-                // Increased padding for better icon spacing
-                const float image_padding = 10.0f; // Increased for more padding
-                ImVec2 image_size = ImVec2(icon_size - (image_padding * 2), icon_size - (image_padding * 2));
-                ImVec2 image_pos = ImVec2(
-                    button_pos.x + (button_size.x - image_size.x) * 0.5f,
-                    button_pos.y + (button_size.y - image_size.y) * 0.5f);
-
-                // Try adding a subtle border around the image for better definition
-                float button_rounding = icon_size * 0.25f;
-                ImVec2 border_padding = ImVec2(1.0f, 1.0f);
-
-                ImGui::GetWindowDrawList()->AddRect(
-                    ImVec2(button_pos.x + border_padding.x, button_pos.y + border_padding.y),
-                    ImVec2(button_pos.x + button_size.x - border_padding.x, button_pos.y + button_size.y - border_padding.y),
-                    IM_COL32(255, 255, 255, 30), // Very subtle white border
-                    button_rounding - border_padding.x,
-                    0, 1.0f // Border thickness
-                );
-
-                ImGui::GetWindowDrawList()->AddImage(
-                    (ImTextureID)(intptr_t)icon.texture_id,
-                    image_pos,
-                    ImVec2(image_pos.x + image_size.x, image_pos.y + image_size.y),
-                    ImVec2(0, 0), ImVec2(1, 1),
-                    IM_COL32(255, 255, 255, 255) // White tint
-                );
-            }
-            else
-            {
-                // Fallback to text button if no texture
-                clicked = ImGui::Button(icon.icon, ImVec2(icon_size, icon_size));
-            }
-
-            if (clicked)
-            {
-                current_panel_ = icon.item;
-
-                // Handle different dock items
-                switch (icon.item)
-                {
-                case DockItem::TOPICS:
-                    // Topics panel can coexist with others, so no auto-close
-                    show_topics_popup_ = !show_topics_popup_;
-                    std::cout << "Toggled ROS2 Topics popup" << std::endl;
-                    break;
-                case DockItem::FRAMES:
-                    closeAllPanelsExceptTopics(); // Close other panels first
-                    show_frames_popup_ = !show_frames_popup_;
-                    std::cout << "Toggled TF Frames popup" << std::endl;
-                    break;
-                case DockItem::FILES:
-                    closeAllPanelsExceptTopics(); // Close other panels first
-                    show_files_popup_ = !show_files_popup_;
-                    std::cout << "Toggled Files popup" << std::endl;
-                    break;
-                case DockItem::MODELS:
-                    closeAllPanelsExceptTopics(); // Close other panels first
-                    show_models_popup_ = !show_models_popup_;
-                    std::cout << "Toggled Models popup" << std::endl;
-                    break;
-                case DockItem::SETTINGS:
-                    closeAllPanelsExceptTopics(); // Close other panels first
-                    show_settings_popup_ = !show_settings_popup_;
-                    std::cout << "Toggled Settings popup" << std::endl;
-                    break;
-                case DockItem::INFO:
-                    closeAllPanelsExceptTopics(); // Close other panels first
-                    show_info_popup_ = !show_info_popup_;
-                    std::cout << "Toggled Info popup" << std::endl;
-                    break;
-                }
-            }
-
-            ImGui::PopID();
-
-            // Tooltip on hover
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("%s", icon.tooltip);
-            }
-
-            ImGui::PopStyleVar();    // FrameRounding
-            ImGui::PopStyleColor(2); // Button colors
-        }
-
-        ImGui::End();
-        ImGui::PopStyleColor(2); // Window colors
-        ImGui::PopStyleVar(3);
-
-        // Performance info panel positioned relative to the dock
-        ImVec2 info_pos = ImVec2(
-            dock_pos.x + dock_width + panel_spacing, // Use the calculated spacing
-            viewport_size.y - dock_height - 20.0f);
-
-        ImGui::SetNextWindowPos(info_pos);
-        ImGui::SetNextWindowSize(ImVec2(perf_panel_width, dock_height));
-
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.0f, 15.0f));
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.9f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
-
-        ImGui::Begin("##Performance", nullptr, dock_flags);
-
-        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
-
-        // Memory monitoring
-        static int frame_count = 0;
-        frame_count++;
-        if (frame_count % 60 == 0)
-        { // Check every ~1 second at 60fps
-            checkMemoryUsage();
-        }
-        ImGui::Text("Memory: %zu MB", last_memory_check_);
-
-        // print current frame
-        ImGui::Text("Current Frame: %s", fixed_frame_.c_str());
-
-        // numbers of topics
-        // ImGui::Text("Topics: %zu", topic_names_.size());
-
-        ImGui::End();
-        ImGui::PopStyleColor(2);
-        ImGui::PopStyleVar(2);
-    }
-
-    void drawTopicsPopup()
-    {
-        if (!show_topics_popup_)
+        // Avoid duplicates
+        if (gnss_subscription_) {
+            std::cout << yellow << "GPS subscription already exists for: " << topic << reset << std::endl;
             return;
-
-        // Apply dock-style theming to the popup
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.0f, 15.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
-
-        // Dock-style colors
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.95f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.9f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.05f, 0.05f, 0.9f));
-
-        // Set initial position and size
-        ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowPos(ImVec2(100, 100), ImGuiCond_FirstUseEver);
-
-        // Create movable window
-        ImGuiWindowFlags popup_flags =
-            ImGuiWindowFlags_NoCollapse;
-
-        if (ImGui::Begin("ROS2 Topics Manager", &show_topics_popup_, popup_flags))
-        {
-
-            // Header with topic count
-            ImGui::Text("Available Topics: %zu", topic_names_.size());
-            ImGui::Separator();
-
-            // Topics list with custom styling
-            ImGui::BeginChild("TopicsList", ImVec2(0, 280), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-            {
-                std::lock_guard<std::mutex> lock(topics_mutex_);
-                auto now = std::chrono::steady_clock::now();
-
-                for (int i = 0; i < (int)topic_names_.size(); ++i)
-                {
-                    const auto &name = topic_names_[i];
-
-                    // Get Hz value
-                    float hz = 0.0f;
-                    auto hz_it = topic_hz_.find(name);
-                    if (hz_it != topic_hz_.end())
-                    {
-                        hz = hz_it->second;
-                    }
-
-                    // Format Hz text
-                    char hz_text[32];
-                    snprintf(hz_text, sizeof(hz_text), "%.1f Hz", hz);
-
-                    // Calculate elements dimensions
-                    const float circle_radius = 6.0f;
-                    const float padding = 4.0f;
-                    const float rounding = 4.0f;
-                    const float hz_square_fixed_width = 65.0f;
-
-                    ImVec2 hz_text_size = ImGui::CalcTextSize(hz_text);
-                    float line_height = ImGui::GetTextLineHeight();
-                    float element_height = std::max(line_height + 8.0f, circle_radius * 2 + 4.0f);
-
-                    // Store initial cursor position
-                    ImVec2 row_start = ImGui::GetCursorScreenPos();
-
-                    // Check if topic is alive
-                    bool alive = false;
-                    auto it = last_msg_time_.find(name);
-                    if (it != last_msg_time_.end())
-                        alive = (now - it->second) < alive_threshold_;
-
-                    // Draw status indicator circle
-                    ImU32 circle_col = alive ? IM_COL32(46, 204, 64, 255) : IM_COL32(255, 65, 54, 255);
-                    float circle_y_center = row_start.y + element_height * 0.5f;
-                    ImGui::GetWindowDrawList()->AddCircleFilled(
-                        {row_start.x + circle_radius + 2.0f, circle_y_center},
-                        circle_radius,
-                        circle_col);
-
-                    // Draw Hz badge
-                    float hz_square_x = row_start.x + circle_radius * 2 + 12.0f;
-                    float hz_square_height = hz_text_size.y + padding * 2;
-                    float hz_square_y = row_start.y + (element_height - hz_square_height) * 0.5f;
-
-                    ImVec2 hz_square_min = {hz_square_x, hz_square_y};
-                    ImVec2 hz_square_max = {hz_square_x + hz_square_fixed_width, hz_square_y + hz_square_height};
-
-                    // Hz badge background
-                    ImU32 badge_color = hz > 0 ? IM_COL32(40, 44, 52, 220) : IM_COL32(60, 20, 20, 220);
-                    ImGui::GetWindowDrawList()->AddRectFilled(
-                        hz_square_min, hz_square_max,
-                        badge_color, rounding);
-
-                    // Hz badge border
-                    ImU32 border_color = hz > 0 ? IM_COL32(100, 120, 140, 180) : IM_COL32(120, 60, 60, 180);
-                    ImGui::GetWindowDrawList()->AddRect(
-                        hz_square_min, hz_square_max,
-                        border_color, rounding, 0, 1.0f);
-
-                    // Hz text centered in badge
-                    ImVec2 hz_text_pos = {
-                        hz_square_x + (hz_square_fixed_width - hz_text_size.x) * 0.5f,
-                        hz_square_y + padding};
-                    ImU32 hz_text_color = hz > 0 ? IM_COL32(220, 220, 220, 255) : IM_COL32(180, 120, 120, 255);
-                    ImGui::GetWindowDrawList()->AddText(hz_text_pos, hz_text_color, hz_text);
-
-                    // Topic name area
-                    float topic_name_x = hz_square_max.x + 12.0f;
-                    float topic_name_y = row_start.y + (element_height - line_height) * 0.5f;
-
-                    // Set cursor for selectable
-                    ImGui::SetCursorScreenPos({topic_name_x, row_start.y});
-
-                    float available_width = ImGui::GetContentRegionAvail().x;
-                    bool is_selected = (i == selected_topic_idx_);
-
-                    // Custom selectable styling
-                    if (is_selected)
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.5f, 0.8f, 0.6f));
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.4f, 0.6f, 0.9f, 0.7f));
-                    }
-                    else
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.2f, 0.3f));
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.25f, 0.25f, 0.25f, 0.5f));
-                    }
-
-                    ImGui::PushID(i);
-                    if (ImGui::Selectable("##topic_select", is_selected, 0, ImVec2(available_width, element_height)))
-                    {
-                        selected_topic_idx_ = i;
-                    }
-                    ImGui::PopID();
-                    ImGui::PopStyleColor(2);
-
-                    // Draw topic name
-                    ImU32 text_color = is_selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(200, 200, 200, 255);
-                    ImGui::GetWindowDrawList()->AddText(
-                        {topic_name_x + 8.0f, topic_name_y},
-                        text_color,
-                        name.c_str());
-                }
-            }
-            ImGui::EndChild();
-
-            ImGui::Separator();
-
-            // Action buttons
-            if (selected_topic_idx_ >= 0 && selected_topic_idx_ < (int)topic_names_.size())
-            {
-                ImGui::Text("📝 Selected: %s", topic_names_[selected_topic_idx_].c_str());
-
-                ImGui::Spacing();
-
-                // Subscribe button
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 0.8f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.7f, 0.3f, 0.9f));
-                if (ImGui::Button("Subscribe", ImVec2(120, 30)))
-                {
-                    addPointCloudTopic(topic_names_[selected_topic_idx_]);
-                }
-                ImGui::PopStyleColor(2);
-
-                ImGui::SameLine();
-
-                // Unsubscribe button
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.2f, 0.2f, 0.8f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.3f, 0.3f, 0.9f));
-                if (ImGui::Button("Unsubscribe", ImVec2(120, 30)))
-                {
-                    std::cout << "Removing topic: " << topic_names_[selected_topic_idx_] << std::endl;
-                    removePointCloudTopic(topic_names_[selected_topic_idx_]);
-                    selected_topic_idx_ = -1;
-                }
-                ImGui::PopStyleColor(2);
-            }
-            else
-            {
-                ImGui::TextDisabled("Select a topic to subscribe/unsubscribe");
-            }
         }
-        ImGui::End();
 
-        // Pop all style modifications
-        ImGui::PopStyleColor(8);
-        ImGui::PopStyleVar(4);
+        gnss_subscription_ = node_->create_subscription<sensor_msgs::msg::NavSatFix>(
+            topic, 
+            rclcpp::SensorDataQoS(),
+            [this, topic](const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
+                // Check if GPS data is valid
+                if (msg->status.status >= sensor_msgs::msg::NavSatStatus::STATUS_FIX) {
+                    current_latitude_ = msg->latitude;
+                    current_longitude_ = msg->longitude;
+                    gps_data_valid_ = true;
+                    
+                    // Update map circle position (green dot)
+                    if (map_snapshotter_) {
+                        map_snapshotter_->setCircleLatLng(current_latitude_, current_longitude_);
+                        
+                        // 🎯 Move the LEFT camera to follow GPS position WITHOUT changing map origin
+                        // Convert GPS lat/lng to world space coordinates (meters)
+                        glm::vec2 gps_world_pos = map_snapshotter_->latLngToWorldMeters(
+                            mbgl::LatLng(current_latitude_, current_longitude_)
+                        );
+                        
+                        // Set the left camera's center to the GPS world position
+                        // This makes the camera look at the GPS position while keeping the map origin fixed
+                        left_camera_control_.setCenter(Eigen::Vector3f(gps_world_pos.x, gps_world_pos.y, 0.0f));
+                        
+                        std::cout << "📍 Left camera following GPS at world position: (" 
+                                  << gps_world_pos.x << ", " << gps_world_pos.y << ")" << std::endl;
+                    }
+                } else {
+                    gps_data_valid_ = false;
+                    std::cout << "⚠️ GPS fix not available, status: " << (int)msg->status.status << std::endl;
+                }
+            });
+        
+        std::cout << green << "✅ Subscribed to GPS topic: " << topic << reset << std::endl;
     }
 
-    void drawFramesPopup()
+    void removeGPSTopic(const std::string &topic)
     {
-        if (!show_frames_popup_)
-            return;
-
-        ImGuiViewport *viewport = ImGui::GetMainViewport();
-        ImVec2 viewport_size = viewport->Size;
-
-        // Calculate dock position (same as in drawMacOSDock)
-        const float dock_height = 80.0f;
-        const float icon_size = 50.0f;
-        const float icon_spacing = 15.0f;
-        const float dock_padding = 15.0f;
-        const float perf_panel_width = 200.0f;
-        const float panel_spacing = 20.0f;
-
-        float dock_width = (icon_size * dock_icons_.size()) + (icon_spacing * (dock_icons_.size() - 1)) + (dock_padding * 2);
-        float total_width = dock_width + panel_spacing + perf_panel_width;
-
-        ImVec2 dock_pos = ImVec2(
-            (viewport_size.x - total_width) * 0.5f,
-            viewport_size.y - dock_height - 20.0f);
-
-        // Popup dimensions
-        const float popup_width = 300.0f;
-        const float popup_height = 200.0f;
-        const float popup_margin = 10.0f;
-
-        // Position popup above the dock, centered
-        ImVec2 popup_pos = ImVec2(
-            dock_pos.x - dock_padding,
-            dock_pos.y - popup_height - popup_margin);
-
-        // Apply dock-style theming
-        const float window_rounding = 20.0f;
-        const float child_rounding = window_rounding + 5.0f;
-
-        // Define consistent background color
-        ImVec4 popup_bg_color = ImVec4(0.1f, 0.1f, 0.1f, 0.95f);
-
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, window_rounding);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-
-        // Elegant dark theme with subtle transparency
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, popup_bg_color);
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, popup_bg_color);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
-
-        // Set fixed position and size
-        ImGui::SetNextWindowPos(popup_pos);
-        ImGui::SetNextWindowSize(ImVec2(popup_width, popup_height));
-
-        ImGuiWindowFlags popup_flags =
-            ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoCollapse |
-            ImGuiWindowFlags_NoTitleBar |
-            ImGuiWindowFlags_NoSavedSettings;
-
-        if (ImGui::Begin("##FramesPopup", &show_frames_popup_, popup_flags))
-        {
-            // === CUSTOM HEADER WITH BACKGROUND ===
-            ImVec2 window_pos = ImGui::GetWindowPos();
-            ImVec2 window_size = ImGui::GetWindowSize();
-            ImDrawList *draw_list = ImGui::GetWindowDrawList();
-
-            // Header dimensions
-            const float header_height = 60.0f;
-            const float header_padding_y = 15.0f;
-            const float header_padding_x = 15.0f;
-
-            // Draw header background rectangle with rounded top corners
-            ImVec2 header_min = ImVec2(window_pos.x, window_pos.y);
-            ImVec2 header_max = ImVec2(window_pos.x + window_size.x, window_pos.y + header_height);
-
-            draw_list->AddRectFilled(
-                header_min,
-                header_max,
-                IM_COL32(255, 255, 255, 30),
-                window_rounding,
-                ImDrawFlags_RoundCornersTop);
-
-            // Add subtle border at bottom of header
-            draw_list->AddLine(
-                ImVec2(header_min.x, header_max.y),
-                ImVec2(header_max.x, header_max.y),
-                IM_COL32(50, 50, 50, 255), 1.0f);
-
-            // Set cursor position for header content
-            ImGui::SetCursorPosY(header_padding_y);
-            ImGui::SetCursorPosX(header_padding_x);
-
-            // Header text
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
-            ImGui::Text("Transform Frames");
-
-            // Show current selection
-            if (!fixed_frame_.empty())
-            {
-                ImGui::SetCursorPosX(header_padding_x);
-                ImGui::TextColored(ImVec4(0.6f, 1.0f, 0.6f, 1.0f), "Current: %s", fixed_frame_.c_str());
-            }
-            ImGui::PopStyleColor();
-
-            // === END CUSTOM HEADER ===
-
-            // Position the list to fill exactly from header to window bottom
-            ImGui::SetCursorPosX(0.0f);
-            ImGui::SetCursorPosY(header_height);
-
-            // Calculate exact dimensions
-            float list_width = window_size.x;
-            float list_height = window_size.y - header_height;
-
-            // Create child window with same background color as popup
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, popup_bg_color);
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0.02f, 0.02f, 0.02f, 0.5f));
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(0.4f, 0.4f, 0.4f, 0.9f));
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-
-            // Use BIGGER rounding for child so corners extend beyond parent
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, child_rounding);
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 10.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, child_rounding * 0.6f);
-            ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 12.0f);
-
-            ImGui::BeginChild("FramesList", ImVec2(list_width, list_height), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-
-            // Display available frames or show "no frames" message
-            if (!available_frames_.empty())
-            {
-                for (const auto &frame : available_frames_)
-                {
-                    bool is_selected = (fixed_frame_ == frame);
-
-                    // Style for selected vs unselected items
-                    if (is_selected)
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.6f, 0.8f, 0.7f));
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.7f, 0.9f, 0.8f));
-                        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.4f, 0.8f, 1.0f, 0.9f));
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-                    }
-                    else
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.15f, 0.15f, 0.15f, 0.4f));
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.25f, 0.25f, 0.25f, 0.6f));
-                        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.35f, 0.35f, 0.35f, 0.8f));
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
-                    }
-
-                    // Create an invisible selectable for the entire row
-                    const float item_height = 32.0f;
-                    const float circle_radius = 4.0f;
-                    const float circle_x_offset = 12.0f;
-                    const float text_x_offset = circle_x_offset + circle_radius * 2 + 8.0f; // Circle + spacing
-
-                    // Use invisible button for the entire area
-                    ImVec2 item_start_pos = ImGui::GetCursorScreenPos();
-                    bool clicked = ImGui::InvisibleButton(("##" + frame).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, item_height));
-
-                    // Get the item rect
-                    ImVec2 item_min = ImGui::GetItemRectMin();
-                    ImVec2 item_max = ImGui::GetItemRectMax();
-
-                    // Apply background color manually
-                    ImDrawList *item_draw_list = ImGui::GetWindowDrawList();
-                    if (ImGui::IsItemHovered() || is_selected)
-                    {
-                        ImU32 bg_color;
-                        if (is_selected)
-                            bg_color = ImGui::IsItemHovered() ? IM_COL32(77, 179, 230, 204) : // HeaderHovered
-                                           IM_COL32(51, 153, 204, 179);                       // Header
-                        else
-                            bg_color = IM_COL32(64, 64, 64, 153); // HeaderHovered for unselected
-
-                        item_draw_list->AddRectFilled(item_min, item_max, bg_color);
-                    }
-
-                    // Handle click
-                    if (clicked && !is_selected)
-                    {
-                        fixed_frame_ = frame;
-                        std::cout << "Selected TF frame: " << frame << std::endl;
-                    }
-
-                    // Calculate vertical center for both circle and text
-                    float vertical_center = (item_min.y + item_max.y) * 0.5f;
-
-                    // Draw green circle for selected frame, perfectly centered
-                    if (is_selected)
-                    {
-                        ImVec2 circle_center = ImVec2(
-                            item_min.x + circle_x_offset,
-                            vertical_center);
-
-                        item_draw_list->AddCircleFilled(
-                            circle_center,
-                            circle_radius,
-                            IM_COL32(76, 175, 80, 255));
-                    }
-
-                    // Draw text, perfectly aligned with circle vertical center
-                    ImVec2 text_pos = ImVec2(
-                        item_min.x + text_x_offset,
-                        vertical_center - ImGui::GetTextLineHeight() * 0.5f // Center text vertically
-                    );
-
-                    item_draw_list->AddText(text_pos, ImGui::GetColorU32(ImGuiCol_Text), frame.c_str());
-
-                    // Tooltip for long frame names
-                    if (ImGui::IsItemHovered() && frame.length() > 25)
-                    {
-                        ImGui::SetTooltip("%s", frame.c_str());
-                    }
-
-                    ImGui::PopStyleColor(4);
-                }
-            }
-            else
-            {
-                // Show message when no frames are available
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-
-                // Center the text vertically and horizontally
-                float text_y_offset = ImGui::GetContentRegionAvail().y * 0.4f;
-                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + text_y_offset);
-
-                // "No frames detected" text
-                const char *no_frames_text = "No frames detected";
-                float text_width = ImGui::CalcTextSize(no_frames_text).x;
-                ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - text_width) * 0.5f);
-                ImGui::Text("%s", no_frames_text);
-
-                // "Check your TF tree" text
-                const char *check_tf_text = "Check your TF tree";
-                float check_text_width = ImGui::CalcTextSize(check_tf_text).x;
-                ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - check_text_width) * 0.5f);
-                ImGui::Text("%s", check_tf_text);
-
-                ImGui::PopStyleColor();
-            }
-
-            ImGui::EndChild();
-            ImGui::PopStyleVar(5);   // Child styling
-            ImGui::PopStyleColor(5); // Child and scrollbar colors
+        if (gnss_subscription_) {
+            std::cout << red << "Removing GPS subscription: " << topic << reset << std::endl;
+            gnss_subscription_.reset();
+            gps_data_valid_ = false;
+        } else {
+            std::cout << red << "No GPS subscription found for: " << topic << reset << std::endl;
         }
-        ImGui::End();
-
-        // Pop all style modifications
-        ImGui::PopStyleColor(4);
-        ImGui::PopStyleVar(5);
     }
-    void drawModelsPopup()
+
+    // ================================
+    // ROS2 MarkerArray topic
+    // ================================
+
+    void addMarkerArrayTopic(const std::string &topic)
     {
-        static int selected_mode = 0; // 0=robot, 1=point cloud, 2=lanelet
-
-        // Robot loading static variables
-        static char filepath_glb[256] = "";
-        static int selected_robot_frame = 0;
-
-        // Point Cloud loading static variables
-        static char pcd_path[256] = "";
-        static int selected_pcd_frame = 0;
-
-        // Lanelet loading static variables
-        static bool show_load_input_lanelet_map = false;
-        static char laneletmap_path[256] = "";
-        static bool show_load_input_map_element = false;
-        static char meshmap_path[256] = "";
-
-        if (!show_models_popup_)
-            return;
-
-        ImGuiViewport *viewport = ImGui::GetMainViewport();
-        ImVec2 viewport_size = viewport->Size;
-
-        // Calculate dock position (same as in drawMacOSDock)
-        const float dock_height = 80.0f;
-        const float icon_size = 50.0f;
-        const float icon_spacing = 15.0f;
-        const float dock_padding = 15.0f;
-        const float perf_panel_width = 200.0f;
-        const float panel_spacing = 20.0f;
-
-        float dock_width = (icon_size * dock_icons_.size()) + (icon_spacing * (dock_icons_.size() - 1)) + (dock_padding * 2);
-        float total_width = dock_width + panel_spacing + perf_panel_width;
-
-        ImVec2 dock_pos = ImVec2(
-            (viewport_size.x - total_width) * 0.5f,
-            viewport_size.y - dock_height - 20.0f);
-
-        // Popup dimensions
-        const float popup_width = 300.0f;
-        const float popup_height = 200.0f;
-        const float popup_margin = 10.0f;
-
-        // Mini dock dimensions
-        const float mini_icon_size = 35.0f;
-        const float mini_icon_spacing = 5.0f;
-        const float mini_dock_padding = 8.0f;
-        const int num_items = 4;
-        const float mini_dock_height = mini_icon_size + (mini_dock_padding * 2);
-        const float mini_dock_width = (mini_icon_size * num_items) + (mini_icon_spacing * (num_items - 1)) + (mini_dock_padding * 2);
-        const float mini_dock_margin = 8.0f;
-
-        // Position popup above the dock, aligned with dock start
-        ImVec2 popup_pos = ImVec2(
-            dock_pos.x - dock_padding,
-            dock_pos.y - popup_height - popup_margin);
-
-        // Position mini dock above and to the left of the popup
-        ImVec2 mini_dock_pos = ImVec2(
-            popup_pos.x,
-            popup_pos.y - mini_dock_height - mini_dock_margin);
-
-        // === DRAW MINI DOCK FIRST (OUTSIDE POPUP) ===
-        // Use background draw list instead of foreground to avoid z-order issues
-        ImDrawList *background_draw_list = ImGui::GetBackgroundDrawList();
-
-        // Mini dock background
-        ImVec2 mini_dock_min = mini_dock_pos;
-        ImVec2 mini_dock_max = ImVec2(mini_dock_pos.x + mini_dock_width, mini_dock_pos.y + mini_dock_height);
-
-        background_draw_list->AddRectFilled(mini_dock_min, mini_dock_max, IM_COL32(25, 25, 25, 240), 12.0f);
-        background_draw_list->AddRect(mini_dock_min, mini_dock_max, IM_COL32(60, 60, 60, 200), 12.0f, 0, 1.0f);
-
-        // Mode names and icons
-        const char *mode_names[] = {"Robot", "Point Cloud", "Lanelet", "Map"};
-        const char *mode_icons[] = {"🤖", "☁️", "🛣️", "🗺️"};
-
-        for (int i = 0; i < num_items; i++)
+        // avoid duplicates
         {
-            bool is_selected = (selected_mode == i);
-
-            // Calculate position for this icon
-            float icon_x = mini_dock_pos.x + mini_dock_padding + (i * (mini_icon_size + mini_icon_spacing));
-            float icon_y = mini_dock_pos.y + mini_dock_padding;
-
-            ImVec2 icon_min = ImVec2(icon_x, icon_y);
-            ImVec2 icon_max = ImVec2(icon_x + mini_icon_size, icon_y + mini_icon_size);
-
-            // Draw icon background
-            ImU32 bg_color = is_selected ? IM_COL32(70, 130, 180, 220) : IM_COL32(50, 50, 50, 160);
-            background_draw_list->AddRectFilled(icon_min, icon_max, bg_color, 8.0f);
-
-            // Draw icon border
-            if (is_selected)
-            {
-                background_draw_list->AddRect(icon_min, icon_max, IM_COL32(100, 150, 200, 255), 8.0f, 0, 2.0f);
-            }
-            else
-            {
-                background_draw_list->AddRect(icon_min, icon_max, IM_COL32(80, 80, 80, 150), 8.0f, 0, 1.0f);
-            }
-
-            // Calculate text position (centered in icon)
-            ImVec2 text_size = ImGui::CalcTextSize(mode_icons[i]);
-            ImVec2 text_pos = ImVec2(
-                icon_x + (mini_icon_size - text_size.x) * 0.5f,
-                icon_y + (mini_icon_size - text_size.y) * 0.5f);
-
-            // Draw the icon
-            background_draw_list->AddText(text_pos, IM_COL32(255, 255, 255, 255), mode_icons[i]);
-
-            // Check for click
-            ImVec2 mouse_pos = ImGui::GetMousePos();
-            if (ImGui::IsMouseClicked(0) &&
-                mouse_pos.x >= icon_min.x && mouse_pos.x <= icon_max.x &&
-                mouse_pos.y >= icon_min.y && mouse_pos.y <= icon_max.y)
-            {
-                selected_mode = i;
-                std::cout << "Selected mode: " << mode_names[i] << std::endl;
-            }
-
-            // Hover effect
-            bool is_hovered = mouse_pos.x >= icon_min.x && mouse_pos.x <= icon_max.x &&
-                              mouse_pos.y >= icon_min.y && mouse_pos.y <= icon_max.y;
-
-            if (is_hovered && !is_selected)
-            {
-                background_draw_list->AddRect(icon_min, icon_max, IM_COL32(120, 120, 120, 200), 8.0f, 0, 1.5f);
-            }
+            std::lock_guard lk(marker_array_topics_mutex_);
+            for (auto &mt_ptr : marker_array_topics_)
+                if (mt_ptr->topic_name == topic)
+                    return;
         }
 
-        // Apply dock-style theming for popup
-        const float window_rounding = 20.0f;
-        const float child_rounding = window_rounding + 5.0f;
+        // create a new MarkerArrayTopic
+        auto mt = std::make_shared<MarkerArrayTopic>();
+        mt->topic_name = topic;
+        mt->marker_array = std::make_shared<visualization_msgs::msg::MarkerArray>();
 
-        // Define consistent background color
-        ImVec4 popup_bg_color = ImVec4(0.1f, 0.1f, 0.1f, 0.95f);
-
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, window_rounding);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-
-        // Elegant dark theme with subtle transparency
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, popup_bg_color);
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, popup_bg_color);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
-
-        // Set fixed position and size
-        ImGui::SetNextWindowPos(popup_pos);
-        ImGui::SetNextWindowSize(ImVec2(popup_width, popup_height));
-
-        ImGuiWindowFlags popup_flags =
-            ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoCollapse |
-            ImGuiWindowFlags_NoTitleBar |
-            ImGuiWindowFlags_NoSavedSettings;
-
-        // IMPORTANT: Use a boolean variable to track if we need to clean up
-        bool popup_opened = ImGui::Begin("##ModelsPopup", &show_models_popup_, popup_flags);
-
-        if (popup_opened)
-        {
-            // === CUSTOM HEADER WITH BACKGROUND ===
-            ImVec2 window_pos = ImGui::GetWindowPos();
-            ImVec2 window_size = ImGui::GetWindowSize();
-            ImDrawList *draw_list = ImGui::GetWindowDrawList();
-
-            // Header dimensions
-            const float header_height = 40.0f;
-            const float header_padding_y = 10.0f;
-            const float header_padding_x = 15.0f;
-
-            // Draw header background rectangle with rounded top corners
-            ImVec2 header_min = ImVec2(window_pos.x, window_pos.y);
-            ImVec2 header_max = ImVec2(window_pos.x + window_size.x, window_pos.y + header_height);
-
-            draw_list->AddRectFilled(
-                header_min,
-                header_max,
-                IM_COL32(255, 255, 255, 30),
-                window_rounding,
-                ImDrawFlags_RoundCornersTop);
-
-            // Add subtle border at bottom of header
-            draw_list->AddLine(
-                ImVec2(header_min.x, header_max.y),
-                ImVec2(header_max.x, header_max.y),
-                IM_COL32(50, 50, 50, 255), 1.0f);
-
-            // Set cursor position for header content
-            ImGui::SetCursorPosY(header_padding_y);
-            ImGui::SetCursorPosX(header_padding_x);
-
-            // Header text showing selected mode
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
-            ImGui::Text("Load %s", mode_names[selected_mode]);
-            ImGui::PopStyleColor();
-
-            // === CONTENT AREA ===
-
-            float content_padding_x = 20.0f;
-            float content_padding_y = 15.0f;
-
-            // Position the content area with padding
-            ImGui::SetCursorPosX(content_padding_x);
-            ImGui::SetCursorPosY(header_height + content_padding_y);
-
-            // Calculate content area dimensions (subtract padding from both sides)
-            float content_width = window_size.x - (content_padding_x * 2);
-            float content_height = window_size.y - header_height - (content_padding_y * 2);
-
-            // Create content area with no automatic padding (we position it manually)
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, popup_bg_color);
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, child_rounding);
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f)); // Internal padding
-
-            bool child_opened = ImGui::BeginChild("ModelsContent", ImVec2(content_width, content_height), false);
-
-            if (child_opened)
+        // subscription callback
+        mt->sub = node_->create_subscription<visualization_msgs::msg::MarkerArray>(
+            topic, rclcpp::SensorDataQoS(),
+            [this, mt, topic](visualization_msgs::msg::MarkerArray::SharedPtr msg)
             {
-                // Show content based on selected mode
-                if (selected_mode == 0) // Robot mode
                 {
-                    // File input section with gray background
-                    ImGui::Text("Model File:");
-
-                    // Gray background for input text
-                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));       // Dark gray background
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));   // Lighter gray on hover
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f)); // Even lighter when active
-
-                    ImGui::SetNextItemWidth(-1);
-                    ImGui::InputText("##filepath", filepath_glb, sizeof(filepath_glb));
-
-                    ImGui::PopStyleColor(3); // Pop the gray colors
-
-                    ImGui::Spacing();
-
-                    // Frame selection section with load button on the right
-                    ImGui::Text("Assign to TF frame:");
-
-                    bool has_frames = !available_frames_.empty();
-                    const char *preview = has_frames ? available_frames_[selected_robot_frame].c_str() : "(map)";
-
-                    // Load button size (same as dock icon)
-                    const float load_button_size = 40.0f;
-                    const float spacing = 8.0f; // Space between combo and button
-
-                    // Calculate available width for the combo box
-                    float available_content_width = ImGui::GetContentRegionAvail().x;
-                    float combo_width = available_content_width - load_button_size - spacing;
-
-                    bool can_load = strlen(filepath_glb) > 0;
-
-                    if (has_frames)
+                    std::lock_guard lk(marker_array_topics_mutex_);
+                    mt->marker_array = msg;
+                    mt->last_update = std::chrono::steady_clock::now();
+                    
+                    if (!msg->markers.empty())
                     {
-                        // Gray styling for combo box (same as input text)
-                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));       // Dark gray background
-                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));   // Lighter gray on hover
-                        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f)); // Even lighter when active
-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));        // Button part of combo
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));    // Button hover
-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));  // Button active
-
-                        ImGui::SetNextItemWidth(combo_width);
-                        if (ImGui::BeginCombo("##robot_frames", preview))
-                        {
-                            for (int i = 0; i < (int)available_frames_.size(); ++i)
-                            {
-                                bool is_selected = (selected_robot_frame == i);
-                                if (ImGui::Selectable(available_frames_[i].c_str(), is_selected))
-                                    selected_robot_frame = i;
-                                if (is_selected)
-                                    ImGui::SetItemDefaultFocus();
-                            }
-                            ImGui::EndCombo();
-                        }
-
-                        ImGui::PopStyleColor(6); // Pop the gray combo colors
-                    }
-                    else
-                    {
-                        // Create a disabled text box that looks like a combo box
-                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.2f, 0.2f, 0.2f, 0.5f));
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-                        ImGui::SetNextItemWidth(combo_width);
-                        char disabled_text[] = "No TF frames (using default)";
-                        ImGui::InputText("##disabled_frames", disabled_text, sizeof(disabled_text), ImGuiInputTextFlags_ReadOnly);
-                        ImGui::PopStyleColor(2);
-                    }
-
-                    // Load button on the same line (right side)
-                    ImGui::SameLine();
-
-                    // Style the load button with dock-like colors
-                    if (!can_load)
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-                    }
-                    else
-                    {
-                        // Dock-style colors for enabled button
-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.27f, 0.51f, 0.71f, 1.0f));        // Steel blue
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.35f, 0.67f, 0.90f, 1.0f)); // Light blue on hover
-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.31f, 0.63f, 0.86f, 1.0f));  // Medium blue on click
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));             // White text
-                    }
-
-                    if (ImGui::Button("🚀", ImVec2(load_button_size, load_button_size)) && can_load)
-                    {
+                        mt->frame_id = msg->markers[0].header.frame_id;
+                        
                         try
                         {
-                            if (mesh_glb_loaded)
-                            {
-                                glBindVertexArray(0);
-                                glUseProgram(0);
-                                model_upload_.cleanupMesh(loaded_mesh_glb);
-                                mesh_glb_loaded = false;
-                            }
-
-                            loaded_mesh_glb = model_upload_.loadModel(filepath_glb);
-                            mesh_glb_loaded = true;
-
-                            const std::string frame_id = has_frames ? available_frames_[selected_robot_frame] : "map";
-                            loaded_mesh_glb.frame_id = frame_id;
-
-                            std::cout << "Loaded robot mesh from: " << filepath_glb
-                                      << " into frame: " << frame_id << " with type: " << loaded_mesh_glb.type
-                                      << std::endl;
-
-                            show_models_popup_ = false;
+                            auto tf_stamped = tf_buffer_->lookupTransform(
+                                fixed_frame_, mt->frame_id, tf2::TimePointZero);
+                            mt->transform = toEigen(tf_stamped.transform);
                         }
-                        catch (const std::exception &e)
-                        {
-                            std::cerr << "GLB load error: " << e.what() << std::endl;
-                        }
-                    }
-
-                    ImGui::PopStyleColor(4);
-
-                    // Tooltip for load button
-                    if (ImGui::IsItemHovered())
-                    {
-                        if (can_load)
-                        {
-                            ImGui::SetTooltip("Load Model");
-                        }
-                        else
-                        {
-                            ImGui::SetTooltip("Select a file first");
+                        catch (...)
+                        { /* leave identity */
                         }
                     }
                 }
-                else if (selected_mode == 1) // Point Cloud mode
-                {
-                    // Point Cloud loading static variables (add these at the top with other statics)
-                    static char pcd_path[256] = "";
-                    static int selected_pcd_frame = 0;
 
-                    // File input section with gray background
-                    ImGui::Text("PCD File:");
+                std::cout << "[MA_CB] " << topic << " → " << msg->markers.size() << " markers\n";
+            });
 
-                    // Gray background for input text (same style as robot mode)
-                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));       // Dark gray background
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));   // Lighter gray on hover
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f)); // Even lighter when active
-
-                    ImGui::SetNextItemWidth(-1);
-                    ImGui::InputText("##pcd_path", pcd_path, sizeof(pcd_path));
-
-                    ImGui::PopStyleColor(3); // Pop the gray colors
-
-                    ImGui::Spacing();
-
-                    // Frame selection section with load button on the right
-                    ImGui::Text("Assign to TF frame:");
-
-                    bool has_frames = !available_frames_.empty();
-                    const char *preview = has_frames ? available_frames_[selected_pcd_frame].c_str() : "(map)";
-
-                    // Load button size (same as robot mode)
-                    const float load_button_size = 40.0f;
-                    const float spacing = 8.0f; // Space between combo and button
-
-                    // Calculate available width for the combo box
-                    float available_content_width = ImGui::GetContentRegionAvail().x;
-                    float combo_width = available_content_width - load_button_size - spacing;
-
-                    bool can_load = strlen(pcd_path) > 0;
-
-                    if (has_frames)
-                    {
-                        // Gray styling for combo box (same as input text)
-                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));       // Dark gray background
-                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));   // Lighter gray on hover
-                        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f)); // Even lighter when active
-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));        // Button part of combo
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));    // Button hover
-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));  // Button active
-
-                        ImGui::SetNextItemWidth(combo_width);
-                        if (ImGui::BeginCombo("##pcd_frames", preview))
-                        {
-                            for (int i = 0; i < (int)available_frames_.size(); ++i)
-                            {
-                                bool is_selected = (selected_pcd_frame == i);
-                                if (ImGui::Selectable(available_frames_[i].c_str(), is_selected))
-                                {
-                                    selected_pcd_frame = i;
-                                    pcd_frame = available_frames_[i]; // Update the pcd_frame variable
-                                }
-                                if (is_selected)
-                                    ImGui::SetItemDefaultFocus();
-                            }
-                            ImGui::EndCombo();
-                        }
-
-                        ImGui::PopStyleColor(6); // Pop the gray combo colors
-                    }
-                    else
-                    {
-                        // Create a disabled text box that looks like a combo box
-                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.2f, 0.2f, 0.2f, 0.5f));
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-                        ImGui::SetNextItemWidth(combo_width);
-                        char disabled_text[] = "No TF frames (using default)";
-                        ImGui::InputText("##disabled_frames", disabled_text, sizeof(disabled_text), ImGuiInputTextFlags_ReadOnly);
-                        ImGui::PopStyleColor(2);
-                    }
-
-                    // Load button on the same line (right side)
-                    ImGui::SameLine();
-
-                    // Style the load button with point cloud theme colors
-                    if (!can_load)
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-                    }
-                    else
-                    {
-                        // Point cloud theme colors (light blue)
-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.8f, 1.0f, 0.8f));         // Light blue
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.85f, 1.0f, 0.9f)); // Lighter blue on hover
-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.65f, 0.82f, 1.0f, 0.9f)); // Medium blue on click
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));           // Dark text
-                    }
-
-                    if (ImGui::Button("☁️", ImVec2(load_button_size, load_button_size)) && can_load)
-                    {
-                        try
-                        {
-                            // Load the point cloud
-                            pcd_loader_.PointCloudBuffer(pcd_path, pcd_frame, false);
-
-                            std::cout << "Loaded point cloud from: " << pcd_path;
-                            if (has_frames)
-                            {
-                                std::cout << " into frame: " << available_frames_[selected_pcd_frame];
-                            }
-                            else
-                            {
-                                std::cout << " into default frame";
-                            }
-                            std::cout << std::endl;
-
-                            show_models_popup_ = false;
-                        }
-                        catch (const std::exception &e)
-                        {
-                            std::cerr << "PCD load error: " << e.what() << std::endl;
-                        }
-                    }
-
-                    ImGui::PopStyleColor(4);
-
-                    // Tooltip for load button
-                    if (ImGui::IsItemHovered())
-                    {
-                        if (can_load)
-                        {
-                            ImGui::SetTooltip("Load Point Cloud");
-                        }
-                        else
-                        {
-                            ImGui::SetTooltip("Select a PCD file first");
-                        }
-                    }
-                }
-                else if (selected_mode == 2) // Map mode
-                {
-                    ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.6f, 1.0f), "Lanelet Loader");
-                    ImGui::Spacing();
-
-                    // Lanelet Map Loading Section
-                    if (ImGui::Button("Load Lanelet Map", ImVec2(-1, 0)))
-                    {
-                        show_load_input_lanelet_map = !show_load_input_lanelet_map;
-                    }
-
-                    if (show_load_input_lanelet_map)
-                    {
-                        ImGui::Spacing();
-                        ImGui::Text("Map File:");
-
-                        // Gray background for input text (same style as robot mode)
-                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
-                        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-
-                        // Calculate available width for input and button
-                        const float ok_button_width = 50.0f;
-                        const float spacing = 8.0f;
-                        float available_content_width = ImGui::GetContentRegionAvail().x;
-                        float input_width = available_content_width - ok_button_width - spacing;
-
-                        ImGui::SetNextItemWidth(input_width);
-                        ImGui::InputText("##laneletmap_path", laneletmap_path, sizeof(laneletmap_path));
-                        ImGui::PopStyleColor(3);
-
-                        ImGui::SameLine();
-
-                        // OK button styling
-                        bool can_load_lanelet = strlen(laneletmap_path) > 0;
-                        if (!can_load_lanelet)
-                        {
-                            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-                        }
-                        else
-                        {
-                            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 1.0f, 0.6f, 0.8f));         // Green theme
-                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 1.0f, 0.7f, 0.9f));  // Lighter green on hover
-                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.85f, 1.0f, 0.65f, 0.9f)); // Medium green on click
-                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));           // Dark text
-                        }
-
-                        if (ImGui::Button("OK", ImVec2(ok_button_width, 0)) && can_load_lanelet)
-                        {
-                            // Load the lanelet map
-                            lanelet_loader_.loadLanelet2Map(laneletmap_path);
-                            show_load_input_lanelet_map = false;
-                        }
-                        ImGui::PopStyleColor(4);
-                    }
-                    else // map content
-                    {
-                        ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.6f, 1.0f), "Lanelet Loader");
-                        ImGui::Spacing();
-                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Coming Soon...");
-                    }
-                }
-            }
-
-            // ALWAYS call EndChild if BeginChild was called
-            ImGui::EndChild();
-
-            // Pop the child styles
-            ImGui::PopStyleVar(3);
-            ImGui::PopStyleColor(1);
+        // store the new topic
+        {
+            std::lock_guard lk(marker_array_topics_mutex_);
+            marker_array_topics_.push_back(mt);
         }
-
-        // ALWAYS call End if Begin was called
-        ImGui::End();
-
-        // Pop all style modifications
-        ImGui::PopStyleColor(4);
-        ImGui::PopStyleVar(5);
     }
 
-    void closeAllPanelsExceptTopics()
+    void removeMarkerArrayTopic(const std::string &topic)
     {
-        // Close all panels except TOPICS
-        show_frames_popup_ = false;
-        show_files_popup_ = false;
-        show_models_popup_ = false;
-        show_settings_popup_ = false;
-        show_info_popup_ = false;
-        // Note: show_topics_popup_ is NOT included here
+        std::lock_guard lk(marker_array_topics_mutex_);
+        for (auto it = marker_array_topics_.begin(); it != marker_array_topics_.end(); ++it)
+        {
+            if ((*it)->topic_name == topic)
+            {
+                std::cout << red << "Removing marker array topic: " << topic << reset << std::endl;
+                (*it)->sub.reset();
+                marker_array_topics_.erase(it);
+                return;
+            }
+        }
+        std::cout << red << "Marker array topic not found: " << topic << reset << std::endl;
     }
 
 private:
@@ -2831,12 +2142,13 @@ private:
     // GLK primitives
     const glk::Drawable *grid_;
 
-    // Camara control
-    guik::ArcCameraControl camera_control_;
+    // Camera controls - separate for each viewport
+    guik::ArcCameraControl left_camera_control_;   // For map viewport
+    guik::ArcCameraControl right_camera_control_;  // For 3D content viewport
+    guik::ArcCameraControl* active_camera_;        // Currently active camera
 
     // control variables for memory, GPU utilization and tf buffer
     size_t last_memory_check_ = 0;
-    bool tf_initialized_ = false;
     size_t last_gpu_memory_check_ = 0;
     float last_gpu_utilization_ = 0.0f;
 
@@ -2862,6 +2174,7 @@ private:
     // For topic discovery
     std::mutex topics_mutex_;
     std::vector<std::string> topic_names_; // Simplified to just store names
+    std::unordered_map<std::string, std::string> topic_types_; // Map topic name to type
     std::chrono::time_point<std::chrono::steady_clock> last_topic_refresh_;
     const std::chrono::milliseconds topic_refresh_interval_{1000};
 
@@ -2882,7 +2195,9 @@ private:
 
     // Store transforms from fixed frame to all other frames
     std::mutex tf_mutex_;
-    std::unordered_map<std::string, Eigen::Isometry3f> frame_transforms_;
+    std::unordered_map<std::string, Eigen::Isometry3f> frame_transforms_ = {
+        {"map", Eigen::Isometry3f::Identity()} // Default frame
+    };
 
     // Store point cloud topics
     std::vector<std::shared_ptr<CloudTopic> > cloud_topics_;
@@ -2892,6 +2207,11 @@ private:
     // point cloud VAO/VBO
     GLuint dbgVao = 0;
     GLuint dbgVbo = 0;
+
+    // Store marker array topics
+    std::vector<std::shared_ptr<MarkerArrayTopic> > marker_array_topics_;
+    std::mutex marker_array_topics_mutex_;
+    int selected_marker_topic_idx_{-1};
 
     // lights
     std::chrono::steady_clock::time_point blink_start_ = std::chrono::steady_clock::now();
@@ -2903,9 +2223,6 @@ private:
     PclLoader pcd_loader_;
     std::string pcd_frame = "map";
 
-    // lanelet2 loader
-    LaneletLoader lanelet_loader_;
-
     // for ply and glb model upload
     modelUpload model_upload_;
     GLuint glb_shader_program_ = 0;
@@ -2914,31 +2231,32 @@ private:
     PlyMesh loaded_mesh_map;
     bool mesh_map_loaded = false;
 
+    // lanelet2 loader
+    LaneletLoader lanelet_loader_;
+
     // mesh glb
     PlyMesh loaded_mesh_glb;
     bool mesh_glb_loaded = false;
 
-    // === Mapbox integration state ===
-    std::unique_ptr<MapboxRenderer> mapbox_;
-    bool mapbox_enabled_ = false;
+    // Mapbox map variables
+    std::unique_ptr<mbgl::SimpleMapSnapshotter> map_snapshotter_;
+    bool map_initialized_ = false;
+    GLuint map_texture_id_ = 0;
 
-    // User-configurable camera/state
-    std::string mapbox_token_ = "pk.eyJ1IjoiYXJtYWdlbmlzcyIsImEiOiJjbWRucWJ2enUwNHdwMm5wczE2YWU0ejZ4In0.lVcJwTwb-2n0yGo4bKeWEQ";
-    std::string map_style_ = "mapbox://styles/mapbox/basic-v9";
-    double map_lat_ = 37.7749, map_lon_ = -122.4194;
-    double map_zoom_ = 10.0, map_bearing_ = 0.0, map_pitch_ = 0.0;
-
-    // World placement (MapboxRenderer draws a textured quad in world space)
-    Eigen::Vector3f map_pos_{0.0f, 0.0f, -5.0f}; // slightly below grid
-    float map_size_ = 10.0f;                     // world units (meters in your scene)
-    float map_rotation_z_ = 0.0f;                // radians
-
-    // Render cadence
-    std::chrono::steady_clock::time_point last_mapbox_render_{};
-    std::chrono::milliseconds mapbox_update_period_{6000};
-
-    std::thread mapbox_thread_;
-    std::atomic<bool> mapbox_should_exit_{false};
+    std::shared_ptr<rclcpp::Subscription<sensor_msgs::msg::NavSatFix>> gnss_subscription_;
+    bool gps_data_valid_ = false;
+    double current_latitude_ = 25.651454988788377;
+    double current_longitude_ = -100.29369354881304;
+    
+    // Split-screen mode control
+    bool split_screen_mode_ = true;
+    
+    // Resizable splitter variables
+    float split_ratio_ = 0.5f;  // 0.0 = all left, 1.0 = all right, 0.5 = 50/50
+    bool is_dragging_splitter_ = false;
+    bool is_hovering_splitter_ = false;
+    const float splitter_width_ = 8.0f;  // Width of the splitter bar
+    const float handle_radius_ = 12.0f;  // Radius of the circular handle
 
     // Add these to your Ros2GLViewer class header (private section)
     enum class DockItem
@@ -2970,12 +2288,7 @@ private:
         {"⚙️", "Lanelet", DockItem::SETTINGS, 0, "6.png"},
         {"ℹ️", "Info", DockItem::INFO, 0, "1.png"}};
 
-    bool show_topics_popup_ = false;
-    bool show_frames_popup_ = false;
-    bool show_files_popup_ = false;
-    bool show_models_popup_ = false;
-    bool show_settings_popup_ = false;
-    bool show_info_popup_ = false;
+
 };
 
 int main(int argc, char **argv)
@@ -2990,6 +2303,12 @@ int main(int argc, char **argv)
     {
         return 1;
     }
+
+    // Set up signal handling for graceful shutdown
+    signal(SIGINT, [](int) {
+        std::cout << "\n🛑 Received SIGINT, shutting down gracefully..." << std::endl;
+        rclcpp::shutdown();
+    });
 
     // Run application
     app->run();
