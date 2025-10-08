@@ -82,7 +82,14 @@ include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/optional)
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/variant/include)
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/geometry.hpp/include)
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/geojson.hpp/include)
-include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/rapidjson/include)
+## RapidJSON headers live in mapbox-base/extras/rapidjson/include in this vendored tree.
+include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/extras/rapidjson/include)
+
+# Backwards-compatible fallback: some mapbox-gl-native versions put rapidjson under
+# vendor/mapbox-base/deps/rapidjson/include — add it only if the directory exists.
+if(EXISTS "${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/rapidjson/include")
+  include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/rapidjson/include)
+endif()
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/expected-lite/include)
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/mapbox-base/deps/shelf-pack-cpp/include)
 include_directories(${MAPBOX_GL_NATIVE_DIR}/vendor/vector-tile/include)

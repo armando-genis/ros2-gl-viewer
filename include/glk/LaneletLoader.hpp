@@ -38,6 +38,7 @@ private:
     bool has_lanelet2_map_setted_ = false;
     std::string map_path_;
     bool has_lanelet2_map_ = false;
+    std::string lanelet_frame_id_ = "map";  // Frame ID for TF transform
     GLuint map_lines_vao_ = 0, map_lines_vbo_ = 0;
     size_t map_lines_count_ = 0;
     std::vector<Eigen::Vector3f> map_lines_;
@@ -64,9 +65,10 @@ public:
     ~LaneletLoader();
 
     void loadLanelet2Map(const std::string &path);
+    void setFrameId(const std::string &frame_id) { lanelet_frame_id_ = frame_id; }
     void mapProcessing(lanelet::LaneletMapPtr &t_map);
-    void mapLines(glk::GLSLShader &shader);
-    void crosswalks(glk::GLSLShader &shader);
-    void stripes(glk::GLSLShader &shader);
+    void mapLines(glk::GLSLShader &shader, std::mutex &tf_mutex, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms);
+    void crosswalks(glk::GLSLShader &shader, std::mutex &tf_mutex, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms);
+    void stripes(glk::GLSLShader &shader, std::mutex &tf_mutex, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms);
     bool isLoaded() const;
 };

@@ -14,21 +14,32 @@ bool LaneletLoader::isLoaded() const
     return has_lanelet2_map_setted_;
 }
 
-void LaneletLoader::mapLines(glk::GLSLShader &shader)
+void LaneletLoader::mapLines(glk::GLSLShader &shader, std::mutex &tf_mutex, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms)
 {
     if (map_lines_count_ > 0 && map_lines_vao_ != 0)
     {
         shader.set_uniform("color_mode", 1);                                                 // flat color
-        shader.set_uniform("material_color", Eigen::Vector4f(0.459f, 0.576f, 0.686f, 0.8f)); // yellow
+        shader.set_uniform("material_color", Eigen::Vector4f(0.459f, 0.576f, 0.686f, 0.8f)); // blue-gray
+        
+        // Apply TF transform to map frame
         Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+        {
+            std::lock_guard<std::mutex> lock(tf_mutex);
+            auto it = frame_transforms.find(lanelet_frame_id_);
+            if (it != frame_transforms.end())
+            {
+                T = it->second;
+            }
+        }
         shader.set_uniform("model_matrix", T.matrix());
+        
         glBindVertexArray(map_lines_vao_);
         glDrawArrays(GL_LINES, 0, GLsizei(map_lines_count_));
         glBindVertexArray(0);
     }
 }
 
-void LaneletLoader::crosswalks(glk::GLSLShader &shader)
+void LaneletLoader::crosswalks(glk::GLSLShader &shader, std::mutex &tf_mutex, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms)
 {
     if (crosswalk_tris_count_ > 0 && crosswalk_vao_ != 0)
     {
@@ -36,7 +47,17 @@ void LaneletLoader::crosswalks(glk::GLSLShader &shader)
         shader.set_uniform("color_mode", 1);
         // RGBA: here white, but you could pick e.g. (1,1,0,1) for yellow zebra stripes
         shader.set_uniform("material_color", Eigen::Vector4f(0.545f, 0.627f, 0.643f, 1.0f));
+        
+        // Apply TF transform to map frame
         Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+        {
+            std::lock_guard<std::mutex> lock(tf_mutex);
+            auto it = frame_transforms.find(lanelet_frame_id_);
+            if (it != frame_transforms.end())
+            {
+                T = it->second;
+            }
+        }
         shader.set_uniform("model_matrix", T.matrix());
 
         glBindVertexArray(crosswalk_vao_);
@@ -45,14 +66,25 @@ void LaneletLoader::crosswalks(glk::GLSLShader &shader)
     }
 }
 
-void LaneletLoader::stripes(glk::GLSLShader &shader)
+void LaneletLoader::stripes(glk::GLSLShader &shader, std::mutex &tf_mutex, const std::unordered_map<std::string, Eigen::Isometry3f> &frame_transforms)
 {
     if (stripe_tris_count_ > 0)
     {
         shader.set_uniform("color_mode", 1); // flat color
         shader.set_uniform("material_color", Eigen::Vector4f(0.918f, 0.918f, 0.918f, 1.0f));
+        
+        // Apply TF transform to map frame
         Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+        {
+            std::lock_guard<std::mutex> lock(tf_mutex);
+            auto it = frame_transforms.find(lanelet_frame_id_);
+            if (it != frame_transforms.end())
+            {
+                T = it->second;
+            }
+        }
         shader.set_uniform("model_matrix", T.matrix());
+        
         glBindVertexArray(stripe_vao_);
         glDrawArrays(GL_TRIANGLES, 0, GLsizei(stripe_tris_count_));
         glBindVertexArray(0);

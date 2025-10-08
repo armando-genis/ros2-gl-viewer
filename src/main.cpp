@@ -47,7 +47,6 @@
 #include "glk/modelUpload.hpp"
 #include "glk/ThickLines.hpp"
 
-
 #include <guik/gl_canvas.hpp>
 #include <guik/camera_control.hpp>
 #include <guik/imgui_application.hpp>
@@ -112,14 +111,17 @@ struct PathTopic
     nav_msgs::msg::Path::SharedPtr path;
     Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
     std::chrono::steady_clock::time_point last_update;
-    
+
     // Path type: 0 = normal line, 1 = car path (ribbon with width)
     int path_type = 0;
     float path_width = 1.5f; // Width in meters for car path
-    
+
     // Color mode for car path: 0 = flat color, 1 = gradient (center to edges), 2 = gradient (edges to center)
     int color_mode = 0;
     
+    // Path color selection: 0 = orange, 1 = blue
+    int path_color_selection = 0;
+
     // OpenGL resources for rendering the path
     GLuint vao = 0;
     GLuint vbo = 0;
@@ -214,24 +216,31 @@ public:
         double x, y;
         glfwGetCursorPos(w, &x, &y);
         bool down = (action != GLFW_RELEASE);
-        
+
         // Don't handle camera movement if we're dragging the splitter
-        if (self->is_dragging_splitter_) {
+        if (self->is_dragging_splitter_)
+        {
             return;
         }
-        
+
         // Determine which camera to use based on mouse position
-        if (self->split_screen_mode_) {
+        if (self->split_screen_mode_)
+        {
             int split_x = static_cast<int>(self->framebuffer_size().x() * self->split_ratio_);
-            if (x < split_x) {
+            if (x < split_x)
+            {
                 self->active_camera_ = &self->left_camera_control_;
-            } else {
+            }
+            else
+            {
                 self->active_camera_ = &self->right_camera_control_;
             }
-        } else {
+        }
+        else
+        {
             self->active_camera_ = &self->right_camera_control_;
         }
-        
+
         self->active_camera_->mouse({int(x), int(y)}, button, down);
     }
 
@@ -245,28 +254,35 @@ public:
         if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT)
         {
             auto self = static_cast<Ros2GLViewer *>(glfwGetWindowUserPointer(w));
-            
+
             // Don't handle camera movement if we're dragging the splitter
-            if (self->is_dragging_splitter_) {
+            if (self->is_dragging_splitter_)
+            {
                 return;
             }
-            
+
             double x, y;
             glfwGetCursorPos(w, &x, &y);
             bool down = (action != GLFW_RELEASE);
-            
+
             // Determine which camera to use based on mouse position
-            if (self->split_screen_mode_) {
+            if (self->split_screen_mode_)
+            {
                 int split_x = static_cast<int>(self->framebuffer_size().x() * self->split_ratio_);
-                if (x < split_x) {
+                if (x < split_x)
+                {
                     self->active_camera_ = &self->left_camera_control_;
-                } else {
+                }
+                else
+                {
                     self->active_camera_ = &self->right_camera_control_;
                 }
-            } else {
+            }
+            else
+            {
                 self->active_camera_ = &self->right_camera_control_;
             }
-            
+
             // treat shift+drag as middle-button pan
             self->active_camera_->mouse({int(x), int(y)}, 2, down);
         }
@@ -280,29 +296,36 @@ public:
         if (io.WantCaptureMouse)
             return;
         auto self = static_cast<Ros2GLViewer *>(glfwGetWindowUserPointer(w));
-        
+
         // Don't handle camera movement if we're dragging the splitter
-        if (self->is_dragging_splitter_) {
+        if (self->is_dragging_splitter_)
+        {
             return;
         }
-        
+
         bool leftDown = (glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
         bool midDown = (glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         bool shiftDown = (glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
                           glfwGetKey(w, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-        
+
         // Determine which camera to use based on mouse position
-        if (self->split_screen_mode_) {
+        if (self->split_screen_mode_)
+        {
             int split_x = static_cast<int>(self->framebuffer_size().x() * self->split_ratio_);
-            if (x < split_x) {
+            if (x < split_x)
+            {
                 self->active_camera_ = &self->left_camera_control_;
-            } else {
+            }
+            else
+            {
                 self->active_camera_ = &self->right_camera_control_;
             }
-        } else {
+        }
+        else
+        {
             self->active_camera_ = &self->right_camera_control_;
         }
-        
+
         int btn = -1;
         if (shiftDown && leftDown)
             btn = 2; // pan
@@ -322,26 +345,33 @@ public:
         if (io.WantCaptureMouse)
             return;
         auto self = static_cast<Ros2GLViewer *>(glfwGetWindowUserPointer(w));
-        
+
         // Don't handle camera movement if we're dragging the splitter
-        if (self->is_dragging_splitter_) {
+        if (self->is_dragging_splitter_)
+        {
             return;
         }
-        
+
         // Determine which camera to use based on mouse position
         double x, y;
         glfwGetCursorPos(w, &x, &y);
-        if (self->split_screen_mode_) {
+        if (self->split_screen_mode_)
+        {
             int split_x = static_cast<int>(self->framebuffer_size().x() * self->split_ratio_);
-            if (x < split_x) {
+            if (x < split_x)
+            {
                 self->active_camera_ = &self->left_camera_control_;
-            } else {
+            }
+            else
+            {
                 self->active_camera_ = &self->right_camera_control_;
             }
-        } else {
+        }
+        else
+        {
             self->active_camera_ = &self->right_camera_control_;
         }
-        
+
         self->active_camera_->scroll({float(dx), float(dy)});
     }
 
@@ -418,7 +448,7 @@ public:
             std::cerr << "Failed to initialize Mapbox map" << std::endl;
             // return false;
         }
- 
+
         // Load dock icon textures
         for (auto &icon : dock_icons_)
         {
@@ -437,7 +467,7 @@ public:
 
     void draw_ui() override
     {
-        
+
         if (!rclcpp::ok())
         {
             close(); // tells guik::Application to stop its run loop
@@ -453,10 +483,14 @@ public:
             std::lock_guard<std::mutex> lock(topics_mutex_);
             // Just clean up old entries, Hz is already calculated in callback
             auto cutoff = now - std::chrono::seconds(5); // Clean up old topic data
-            for (auto it = topic_message_times_.begin(); it != topic_message_times_.end();) {
-                if (it->second.empty() || it->second.back() < cutoff) {
+            for (auto it = topic_message_times_.begin(); it != topic_message_times_.end();)
+            {
+                if (it->second.empty() || it->second.back() < cutoff)
+                {
                     it = topic_message_times_.erase(it);
-                } else {
+                }
+                else
+                {
                     ++it;
                 }
             }
@@ -503,51 +537,61 @@ public:
         // ============================================
         ImGui::Separator();
         ImGui::Text("Display Mode:");
-        if (ImGui::Checkbox("Split Screen Mode", &split_screen_mode_)) {
+        if (ImGui::Checkbox("Split Screen Mode", &split_screen_mode_))
+        {
             std::cout << "Split screen mode: " << (split_screen_mode_ ? "ON" : "OFF") << std::endl;
         }
-        if (split_screen_mode_) {
+        if (split_screen_mode_)
+        {
             ImGui::Text("  Left: Map | Right: PCD/Meshes/Lanelet");
-            
+
             // Split ratio control
             ImGui::Separator();
             ImGui::Text("Split Control:");
             ImGui::SliderFloat("Split Ratio", &split_ratio_, 0.05f, 0.95f, "%.2f");
             ImGui::SameLine();
-            if (ImGui::Button("Reset to 50/50")) {
+            if (ImGui::Button("Reset to 50/50"))
+            {
                 split_ratio_ = 0.5f;
                 std::cout << "🔄 Split ratio reset to 50/50" << std::endl;
             }
-            
+
             // Show current split percentages
             int left_percent = static_cast<int>(split_ratio_ * 100);
             int right_percent = 100 - left_percent;
             ImGui::Text("Current split: %d%% / %d%%", left_percent, right_percent);
-            
+
             // Camera controls for split-screen mode
             ImGui::Separator();
             ImGui::Text("Camera Controls:");
-            
-            if (ImGui::Button("Reset Left Camera (Map)")) {
+
+            if (ImGui::Button("Reset Left Camera (Map)"))
+            {
                 left_camera_control_ = guik::ArcCameraControl();
                 std::cout << "🔄 Left camera (map) reset" << std::endl;
             }
             ImGui::SameLine();
-            if (ImGui::Button("Reset Right Camera (3D)")) {
+            if (ImGui::Button("Reset Right Camera (3D)"))
+            {
                 right_camera_control_ = guik::ArcCameraControl();
                 std::cout << "🔄 Right camera (3D) reset" << std::endl;
             }
-            
+
             // Show which camera is currently active
-            if (active_camera_ == &left_camera_control_) {
+            if (active_camera_ == &left_camera_control_)
+            {
                 ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Active: Left Camera (Map)");
-            } else {
+            }
+            else
+            {
                 ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Active: Right Camera (3D)");
             }
-            
+
             ImGui::Text("Tip: Click in left/right half to control that camera");
             ImGui::Text("Tip: Drag the circular handle to resize split");
-        } else {
+        }
+        else
+        {
             ImGui::Text("  Single view: All content together");
             ImGui::Text("  Using Right Camera for all content");
         }
@@ -557,13 +601,16 @@ public:
         // ============================================
         ImGui::Separator();
         ImGui::Text("Mapbox Map Status:");
-        if (map_snapshotter_) {
+        if (map_snapshotter_)
+        {
             ImGui::Text("  Loading: %s", map_snapshotter_->isLoading() ? "Yes" : "No");
             ImGui::Text("  Ready: %s", map_snapshotter_->isReady() ? "Yes" : "No");
             ImGui::Text("  Texture: %s", map_snapshotter_->hasValidTexture() ? "Valid" : "Invalid");
             ImGui::Text("  Pending: %s", map_snapshotter_->hasPendingTexture() ? "Yes" : "No");
             ImGui::Text("  Tile Geometry: %zu loaded", map_snapshotter_->getLoadedGeometryCount());
-        } else {
+        }
+        else
+        {
             ImGui::Text("  Not initialized");
         }
 
@@ -605,7 +652,6 @@ public:
         }
 
         ImGui::Separator();
-
 
         // Button to toggle Topics window
         if (ImGui::Button("Show ROS2 Topics"))
@@ -730,35 +776,50 @@ public:
                         {topic_name_x + 4.0f, topic_name_y}, // Small left padding
                         is_selected ? IM_COL32(255, 255, 255, 255) : ImGui::GetColorU32(ImGuiCol_Text),
                         name.c_str());
-                    
+
                     // Draw topic type below the name (smaller text)
                     auto type_it = topic_types_.find(name);
-                    if (type_it != topic_types_.end()) {
+                    if (type_it != topic_types_.end())
+                    {
                         std::string type_short = type_it->second;
                         // Shorten common ROS2 message types for display
-                        if (type_short.find("sensor_msgs/msg/PointCloud2") != std::string::npos) {
+                        if (type_short.find("sensor_msgs/msg/PointCloud2") != std::string::npos)
+                        {
                             type_short = "PointCloud2";
-                        } else if (type_short.find("sensor_msgs/msg/NavSatFix") != std::string::npos) {
+                        }
+                        else if (type_short.find("sensor_msgs/msg/NavSatFix") != std::string::npos)
+                        {
                             type_short = "NavSatFix";
-                        } else if (type_short.find("visualization_msgs/msg/MarkerArray") != std::string::npos) {
+                        }
+                        else if (type_short.find("visualization_msgs/msg/MarkerArray") != std::string::npos)
+                        {
                             type_short = "MarkerArray";
-                        } else if (type_short.find("nav_msgs/msg/Path") != std::string::npos) {
+                        }
+                        else if (type_short.find("nav_msgs/msg/Path") != std::string::npos)
+                        {
                             type_short = "Path";
-                        } else if (type_short.find("geometry_msgs/msg/PoseStamped") != std::string::npos) {
+                        }
+                        else if (type_short.find("geometry_msgs/msg/PoseStamped") != std::string::npos)
+                        {
                             type_short = "PoseStamped";
-                        } else if (type_short.find("nav_msgs/msg/OccupancyGrid") != std::string::npos) {
+                        }
+                        else if (type_short.find("nav_msgs/msg/OccupancyGrid") != std::string::npos)
+                        {
                             type_short = "OccupancyGrid";
-                        } else {
+                        }
+                        else
+                        {
                             // Extract just the message name from the full type
                             size_t last_slash = type_short.find_last_of('/');
-                            if (last_slash != std::string::npos) {
+                            if (last_slash != std::string::npos)
+                            {
                                 type_short = type_short.substr(last_slash + 1);
                             }
                         }
-                        
+
                         ImGui::GetWindowDrawList()->AddText(
                             {topic_name_x + 4.0f, topic_name_y + line_height + 2.0f}, // Below the topic name
-                            IM_COL32(150, 150, 150, 200), // Gray color for type
+                            IM_COL32(150, 150, 150, 200),                             // Gray color for type
                             type_short.c_str());
                     }
                 }
@@ -767,52 +828,75 @@ public:
 
             if (selected_topic_idx_ >= 0 && selected_topic_idx_ < (int)topic_names_.size())
             {
-                const std::string& selected_topic = topic_names_[selected_topic_idx_];
+                const std::string &selected_topic = topic_names_[selected_topic_idx_];
                 auto type_it = topic_types_.find(selected_topic);
                 std::string topic_type = (type_it != topic_types_.end()) ? type_it->second : "unknown";
-                
+
                 // Determine button text and action based on topic type
                 std::string button_text = "+ Subscribe";
                 std::string action_type = "unknown";
-                
-                if (topic_type.find("sensor_msgs/msg/PointCloud2") != std::string::npos) {
+
+                if (topic_type.find("sensor_msgs/msg/PointCloud2") != std::string::npos)
+                {
                     button_text = "+ Add PointCloud";
                     action_type = "pointcloud";
-                } else if (topic_type.find("sensor_msgs/msg/NavSatFix") != std::string::npos) {
+                }
+                else if (topic_type.find("sensor_msgs/msg/NavSatFix") != std::string::npos)
+                {
                     button_text = "+ Add GPS";
                     action_type = "gps";
-                } else if (topic_type.find("visualization_msgs/msg/MarkerArray") != std::string::npos) {
+                }
+                else if (topic_type.find("visualization_msgs/msg/MarkerArray") != std::string::npos)
+                {
                     button_text = "+ Add MarkerArray";
                     action_type = "markerarray";
-                } else if (topic_type.find("nav_msgs/msg/Path") != std::string::npos) {
+                }
+                else if (topic_type.find("nav_msgs/msg/Path") != std::string::npos)
+                {
                     button_text = "+ Add Path";
                     action_type = "path";
-                } else if (topic_type.find("geometry_msgs/msg/PoseStamped") != std::string::npos) {
+                }
+                else if (topic_type.find("geometry_msgs/msg/PoseStamped") != std::string::npos)
+                {
                     button_text = "+ Add Pose";
                     action_type = "pose";
-                } else if (topic_type.find("nav_msgs/msg/OccupancyGrid") != std::string::npos) {
+                }
+                else if (topic_type.find("nav_msgs/msg/OccupancyGrid") != std::string::npos)
+                {
                     button_text = "+ Add OccupancyGrid";
                     action_type = "occupancygrid";
-                } else {
+                }
+                else
+                {
                     button_text = "+ Add Generic";
                     action_type = "generic";
                 }
-                
+
                 ImGui::Text("Subscribe to: %s", selected_topic.c_str());
                 ImGui::Text("Type: %s", topic_type.c_str());
-                
+
                 // Special UI for Path topics - allow selecting path type and color mode
                 static int path_type_selection = 0; // 0 = normal line, 1 = car path
-                static int path_color_mode = 0; // 0 = flat, 1 = gradient
-                if (action_type == "path") {
+                static int path_color_mode = 0;     // 0 = flat, 1 = gradient
+                static int path_color_selection = 0; // 0 = orange, 1 = blue
+                if (action_type == "path")
+                {
                     ImGui::Separator();
                     ImGui::Text("Path Visualization Type:");
                     ImGui::RadioButton("Normal Path (Line)", &path_type_selection, 0);
                     ImGui::SameLine();
                     ImGui::RadioButton("Car Path (1.5m width)", &path_type_selection, 1);
-                    
+
+                    // Show color selection for both path types
+                    ImGui::Separator();
+                    ImGui::Text("Path Color:");
+                    ImGui::RadioButton("Orange", &path_color_selection, 0);
+                    ImGui::SameLine();
+                    ImGui::RadioButton("Blue", &path_color_selection, 1);
+
                     // Show color mode options only for car path
-                    if (path_type_selection == 1) {
+                    if (path_type_selection == 1)
+                    {
                         ImGui::Separator();
                         ImGui::Text("Car Path Color Mode:");
                         ImGui::RadioButton("Flat Color", &path_color_mode, 0);
@@ -824,26 +908,39 @@ public:
                         ImGui::Text("  Mode 2: solid at edges, transparent at center");
                     }
                 }
-                
+
                 if (ImGui::Button(button_text.c_str()))
                 {
-                    std::cout << green << "Adding subscription for topic: " << selected_topic 
+                    std::cout << green << "Adding subscription for topic: " << selected_topic
                               << " (type: " << action_type << ")" << reset << std::endl;
-                    
+
                     // Call appropriate subscription function based on type
-                    if (action_type == "pointcloud") {
+                    if (action_type == "pointcloud")
+                    {
                         addPointCloudTopic(selected_topic);
-                    } else if (action_type == "gps") {
+                    }
+                    else if (action_type == "gps")
+                    {
                         addGPSTopic(selected_topic);
-                    } else if (action_type == "markerarray") {
+                    }
+                    else if (action_type == "markerarray")
+                    {
                         addMarkerArrayTopic(selected_topic);
-                    } else if (action_type == "path") {
-                        addPathTopic(selected_topic, path_type_selection, path_color_mode);
-                    } else if (action_type == "pose") {
+                    }
+                    else if (action_type == "path")
+                    {
+                        addPathTopic(selected_topic, path_type_selection, path_color_mode, path_color_selection);
+                    }
+                    else if (action_type == "pose")
+                    {
                         // addPoseTopic(selected_topic);
-                    } else if (action_type == "occupancygrid") {
+                    }
+                    else if (action_type == "occupancygrid")
+                    {
                         // addOccupancyGridTopic(selected_topic);
-                    } else {
+                    }
+                    else
+                    {
                         // addGenericTopic(selected_topic);
                     }
                 }
@@ -851,13 +948,13 @@ public:
                 if (ImGui::Button("- Remove"))
                 {
                     std::cout << red << "Removing topic: " << selected_topic << reset << std::endl;
-                    
+
                     // Try to remove from all subscription types
                     removePointCloudTopic(selected_topic);
                     removeMarkerArrayTopic(selected_topic);
                     removePathTopic(selected_topic);
                     // removeGPSTopic(selected_topic); // GPS is handled separately
-                    
+
                     selected_topic_idx_ = -1;
                 }
             }
@@ -872,8 +969,8 @@ public:
                 ImGui::Text("Subscribed Marker Array Topics:");
                 for (const auto &mt : marker_array_topics_)
                 {
-                    ImGui::Text("  • %s (%zu markers)", mt->topic_name.c_str(), 
-                               mt->marker_array ? mt->marker_array->markers.size() : 0);
+                    ImGui::Text("  • %s (%zu markers)", mt->topic_name.c_str(),
+                                mt->marker_array ? mt->marker_array->markers.size() : 0);
                 }
             }
         }
@@ -887,31 +984,40 @@ public:
                 ImGui::Text("Subscribed Path Topics:");
                 for (const auto &pt : path_topics_)
                 {
-                    const char* type_str = (pt->path_type == 0) ? "Line" : "Car (1.5m)";
-                    const char* color_str;
-                    if (pt->color_mode == 0) {
-                        color_str = "Flat";
-                    } else if (pt->color_mode == 1) {
-                        color_str = "Grad(C→E)";
-                    } else {
-                        color_str = "Grad(E→C)";
+                    const char *type_str = (pt->path_type == 0) ? "Line" : "Car (1.5m)";
+                    const char *color_mode_str;
+                    if (pt->color_mode == 0)
+                    {
+                        color_mode_str = "Flat";
+                    }
+                    else if (pt->color_mode == 1)
+                    {
+                        color_mode_str = "Grad(C→E)";
+                    }
+                    else
+                    {
+                        color_mode_str = "Grad(E→C)";
                     }
                     
-                    if (pt->path_type == 0) {
-                        // Normal path - don't show color mode
-                        ImGui::Text("  • %s (%zu poses) [%s]", pt->topic_name.c_str(), 
-                                   pt->path ? pt->path->poses.size() : 0, type_str);
-                    } else {
-                        // Car path - show color mode
-                        ImGui::Text("  • %s (%zu poses) [%s, %s]", pt->topic_name.c_str(), 
-                                   pt->path ? pt->path->poses.size() : 0, type_str, color_str);
+                    const char *path_color_str = (pt->path_color_selection == 0) ? "Orange" : "Blue";
+
+                    if (pt->path_type == 0)
+                    {
+                        // Normal path - show color selection
+                        ImGui::Text("  • %s (%zu poses) [%s, %s]", pt->topic_name.c_str(),
+                                    pt->path ? pt->path->poses.size() : 0, type_str, path_color_str);
+                    }
+                    else
+                    {
+                        // Car path - show color mode and color selection
+                        ImGui::Text("  • %s (%zu poses) [%s, %s, %s]", pt->topic_name.c_str(),
+                                    pt->path ? pt->path->poses.size() : 0, type_str, color_mode_str, path_color_str);
                     }
                 }
             }
         }
 
         ImGui::Separator();
-
 
         // ============================================
         // Robot Mesh
@@ -1051,6 +1157,7 @@ public:
 
         static bool show_load_input_lanelet_map = false;
         static char laneletmap_path[256] = "";
+        static int selected_lanelet_frame = 0;
         if (ImGui::Button("Load Lanelet Map"))
         {
             show_load_input_lanelet_map = !show_load_input_lanelet_map;
@@ -1066,6 +1173,33 @@ public:
                 // construct the buffer from the file
                 lanelet_loader_.loadLanelet2Map(laneletmap_path);
                 show_load_input_lanelet_map = false;
+            }
+            // TF
+            ImGui::Separator();
+            ImGui::Text("Assign to TF frame:");
+            ImGui::SameLine();
+            if (!available_frames_.empty())
+            {
+                const char *preview = available_frames_[selected_lanelet_frame].c_str();
+                if (ImGui::BeginCombo("##lanelet_frames", preview))
+                {
+                    for (int n = 0; n < (int)available_frames_.size(); ++n)
+                    {
+                        bool is_selected = (selected_lanelet_frame == n);
+                        if (ImGui::Selectable(available_frames_[n].c_str(), is_selected))
+                        {
+                            selected_lanelet_frame = n;
+                            lanelet_loader_.setFrameId(available_frames_[n]);
+                        }
+                        if (is_selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No TF frames");
             }
         }
 
@@ -1091,17 +1225,17 @@ public:
             }
         }
 
-
         ImGui::End();
-        
+
         // Render splitter bar in split-screen mode
-        if (split_screen_mode_) {
+        if (split_screen_mode_)
+        {
             renderSplitterBar();
         }
     }
 
     // Helper method to render all 3D content (PCD, meshes, lanelet, grid, frames)
-    void render3DContent(glk::GLSLShader &shader, const Eigen::Matrix4f& view, const Eigen::Matrix4f& projection)
+    void render3DContent(glk::GLSLShader &shader, const Eigen::Matrix4f &view, const Eigen::Matrix4f &projection)
     {
         // ============================================
         // render grid
@@ -1149,7 +1283,6 @@ public:
             }
         }
 
-
         // ============================================
         // lights
         // ============================================
@@ -1183,7 +1316,7 @@ public:
                 // Create rounded rectangle shape (car tail light)
                 // Main rectangular body with slight rounding via sphere
                 const auto &sphere = glk::Primitives::instance()->primitive(glk::Primitives::SPHERE);
-                
+
                 // Choose color based on blink state
                 Eigen::Vector4f lightColor;
                 if (lightOn)
@@ -1199,7 +1332,7 @@ public:
                 // Draw rounded rectangle as scaled sphere (wider than tall)
                 Eigen::Affine3f lightTransform = M;
                 lightTransform.rotate(Eigen::AngleAxisf(M_PI / 2.0f, Eigen::Vector3f::UnitZ())); // Rotate 90 degrees around Z
-                lightTransform.scale(Eigen::Vector3f(0.17f, 0.12f, 0.08f)); // Wide, medium height, shallow depth
+                lightTransform.scale(Eigen::Vector3f(0.17f, 0.12f, 0.08f));                      // Wide, medium height, shallow depth
                 shader.set_uniform("model_matrix", lightTransform.matrix());
                 sphere.draw(shader);
             }
@@ -1215,7 +1348,7 @@ public:
             float shader_point_size = pcd_file_point_size_ * 20.0f;
             shader.set_uniform("point_scale", shader_point_size);
             shader.set_uniform("point_size", 1.0f);
-            
+
             pcd_loader_.renderpcl(shader, tf_mutex_, frame_transforms_);
         }
 
@@ -1230,7 +1363,7 @@ public:
         if (mesh_glb_loaded && loaded_mesh_glb.type == 0) // 0 = GLB type
         {
             model_upload_.renderGLBMesh(loaded_mesh_glb, glb_shader_program_, tf_mutex_, frame_transforms_);
-            
+
             // ✅ CRITICAL: Re-bind the main shader after GLB rendering
             // GLB uses a custom shader program, so we must restore the main shader
             // before rendering other content (point clouds, lanelet, etc.)
@@ -1247,62 +1380,83 @@ public:
         // ============================================
         if (lanelet_loader_.isLoaded())
         {
-            lanelet_loader_.mapLines(shader);
-            lanelet_loader_.crosswalks(shader);
-            lanelet_loader_.stripes(shader);
+            lanelet_loader_.mapLines(shader, tf_mutex_, frame_transforms_);
+            lanelet_loader_.crosswalks(shader, tf_mutex_, frame_transforms_);
+            lanelet_loader_.stripes(shader, tf_mutex_, frame_transforms_);
         }
         // ============================================
         // render path topics using shader-based approach
         // ============================================
         {
             std::lock_guard lk(path_topics_mutex_);
-            
+
             // Clear previous path data
             path_renderer_.clearPaths();
-            
+
             // Add all path segments to the shader-based renderer
             for (auto &pt : path_topics_)
             {
                 if (!pt->path || pt->path->poses.empty())
                     continue;
-                
+
                 // Convert path poses to Eigen vectors
                 std::vector<Eigen::Vector3f> path_points;
                 path_points.reserve(pt->path->poses.size());
-                
-                for (const auto &pose : pt->path->poses) {
+
+                for (const auto &pose : pt->path->poses)
+                {
                     Eigen::Vector3f world_pos = pt->transform * Eigen::Vector3f(
-                        pose.pose.position.x,
-                        pose.pose.position.y,
-                        pose.pose.position.z
-                    );
+                                                                    pose.pose.position.x,
+                                                                    pose.pose.position.y,
+                                                                    pose.pose.position.z);
                     path_points.push_back(world_pos);
                 }
-                
-                // Determine color based on path type
+
+                // Determine color based on path type and color selection
                 Eigen::Vector3f path_color;
-                if (pt->path_type == 0) {
-                    path_color = Eigen::Vector3f(0.0f, 1.0f, 1.0f); // Cyan for normal paths
-                } else {
-                    path_color = Eigen::Vector3f(1.0f, 0.5f, 0.0f); // Orange for car paths
+                if (pt->path_type == 0)
+                {
+                    // Normal path - use selected color
+                    if (pt->path_color_selection == 0)
+                    {
+                        path_color = Eigen::Vector3f(1.0f, 0.5f, 0.0f); // Orange
+                    }
+                    else
+                    {
+                        path_color = Eigen::Vector3f(0.0f, 0.5f, 1.0f); // Blue
+                    }
                 }
-                
+                else
+                {
+                    // Car path - use selected color
+                    if (pt->path_color_selection == 0)
+                    {
+                        path_color = Eigen::Vector3f(1.0f, 0.5f, 0.0f); // Orange
+                    }
+                    else
+                    {
+                        path_color = Eigen::Vector3f(0.0f, 0.5f, 1.0f); // Blue
+                    }
+                }
+
                 // Add path segment to shader renderer
-                path_renderer_.addPathSegment(path_points, path_color, 
-                                           pt->path_width, pt->path_type, pt->color_mode, 0.8f);
+                path_renderer_.addPathSegment(path_points, path_color,
+                                              pt->path_width, pt->path_type, pt->color_mode, 0.8f);
             }
-            
+
             // Render all paths using the shader-based system
             path_renderer_.renderPaths(view, projection);
+            
+            shader.use();
         }
-        
+
         // ============================================
         // render point clouds ros2 topics
         // ============================================
         {
             std::lock_guard lk(cloud_topics_mutex_);
             // set uniform color-mode to "flat color" and material color to white
-            shader.set_uniform("color_mode", 1);  // Use flat color mode
+            shader.set_uniform("color_mode", 1);                                           // Use flat color mode
             shader.set_uniform("material_color", Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f)); // White color
 
             // Convert RViz-style point size (0-50) to shader uniforms
@@ -1363,7 +1517,7 @@ public:
                 float shader_point_size = ros2_topic_point_size_ * 20.0f;
                 shader.set_uniform("point_scale", shader_point_size);
                 shader.set_uniform("point_size", 1.0f);
-                
+
                 // draw the per-cloud VAO
                 shader.set_uniform("model_matrix", ct->transform.matrix());
                 glBindVertexArray(ct->vao);
@@ -1410,16 +1564,16 @@ public:
         auto fb_size = framebuffer_size();
         float w = float(fb_size.x());
         float h = float(fb_size.y());
-        
+
         // Handle splitter interaction
         handleSplitterInteraction();
-        
+
         // Calculate dynamic split based on split_ratio_
         int left_w = static_cast<int>(w * split_ratio_);
         int right_w = fb_size.x() - left_w;
         float left_w_f = float(left_w);
         float right_w_f = float(right_w);
-        
+
         // 1) Compute View matrices for each viewport
         Eigen::Matrix4f left_view = left_camera_control_.view_matrix();
         Eigen::Matrix4f right_view = right_camera_control_.view_matrix();
@@ -1429,7 +1583,8 @@ public:
         float zNear = 0.01f, zFar = 1000.f;
         float f = 1.f / std::tan(fovY / 2.f);
 
-        if (split_screen_mode_) {
+        if (split_screen_mode_)
+        {
             // Split-screen mode: two separate viewports with dynamic split
             float aspect_left = left_w_f / h;
             float aspect_right = right_w_f / h;
@@ -1467,23 +1622,27 @@ public:
             glDepthFunc(GL_LESS);
 
             // Render Mapbox map on left side
-            if (map_snapshotter_) {
+            if (map_snapshotter_)
+            {
                 // Always try to update texture first (this will upload pending data)
                 map_snapshotter_->updateTexture();
-                
+
                 // Now check if we have a valid texture to render
-                if (map_snapshotter_->hasValidTexture()) {
+                if (map_snapshotter_->hasValidTexture())
+                {
                     // Convert Eigen matrices to GLM matrices for the map renderer
                     glm::mat4 glm_view = glm::mat4(1.0f);
                     glm::mat4 glm_proj = glm::mat4(1.0f);
-                    
-                                    // Convert Eigen to GLM (column-major order)
-                for (int i = 0; i < 4; ++i) {
-                    for (int j = 0; j < 4; ++j) {
-                        glm_view[j][i] = left_view(i, j);
-                        glm_proj[j][i] = proj_left(i, j);
+
+                    // Convert Eigen to GLM (column-major order)
+                    for (int i = 0; i < 4; ++i)
+                    {
+                        for (int j = 0; j < 4; ++j)
+                        {
+                            glm_view[j][i] = left_view(i, j);
+                            glm_proj[j][i] = proj_left(i, j);
+                        }
                     }
-                }
                     map_snapshotter_->renderMap(glm_proj, glm_view);
                     map_snapshotter_->renderCircleOverlay(glm_proj, glm_view);
                 }
@@ -1496,14 +1655,14 @@ public:
             // RIGHT VIEWPORT: PCD, meshes, lanelet, grid, frames
             // ============================================
             glViewport(left_w, 0, right_w, (GLsizei)fb_size.y());
-            
+
             // Clear right viewport completely (both color and depth)
             glScissor(left_w, 0, right_w, (GLsizei)fb_size.y());
             glEnable(GL_SCISSOR_TEST);
             glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glDisable(GL_SCISSOR_TEST);
-            
+
             // Ensure depth testing is properly set up for this viewport
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LESS);
@@ -1520,12 +1679,12 @@ public:
 
             // Ensure depth buffer is properly written for this viewport
             glFlush();
-            
+
             // render text
             text_renderer_.renderWorldText(right_view, proj_right);
-
-
-        } else {
+        }
+        else
+        {
             // Single view mode: all content together
             float aspect = w / h;
             Eigen::Matrix4f proj = Eigen::Matrix4f::Zero();
@@ -1561,134 +1720,144 @@ public:
     {
         // Call parent implementation
         guik::Application::framebuffer_size_callback(size);
-        
+
         // Update main canvas with new size
-        if (main_canvas_) {
+        if (main_canvas_)
+        {
             main_canvas_.reset(new guik::GLCanvas("./data", size));
         }
-        
+
         // Update Mapbox snapshotter size if it exists
-        if (map_snapshotter_) {
+        if (map_snapshotter_)
+        {
             std::cout << "🔄 Updating Mapbox snapshotter size to: " << size.x() << "x" << size.y() << std::endl;
         }
-        
+
         std::cout << "📐 Window resized to: " << size.x() << "x" << size.y() << std::endl;
     }
 
     void handleSplitterInteraction()
     {
-        if (!split_screen_mode_) return;
-        
-        ImGuiIO& io = ImGui::GetIO();
+        if (!split_screen_mode_)
+            return;
+
+        ImGuiIO &io = ImGui::GetIO();
         auto fb_size = framebuffer_size();
         float w = float(fb_size.x());
         float h = float(fb_size.y());
-        
+
         // Calculate splitter position
         float splitter_x = w * split_ratio_;
         float splitter_left = splitter_x - splitter_width_ * 0.5f;
         float splitter_right = splitter_x + splitter_width_ * 0.5f;
-        
+
         // Check if mouse is over splitter
         ImVec2 mouse_pos = ImGui::GetMousePos();
-        bool mouse_over_splitter = (mouse_pos.x >= splitter_left && mouse_pos.x <= splitter_right && 
-                                   mouse_pos.y >= 0 && mouse_pos.y <= h);
-        
+        bool mouse_over_splitter = (mouse_pos.x >= splitter_left && mouse_pos.x <= splitter_right &&
+                                    mouse_pos.y >= 0 && mouse_pos.y <= h);
+
         is_hovering_splitter_ = mouse_over_splitter;
-        
+
         // Handle mouse interactions
-        if (ImGui::IsMouseClicked(0) && mouse_over_splitter) {
+        if (ImGui::IsMouseClicked(0) && mouse_over_splitter)
+        {
             is_dragging_splitter_ = true;
         }
-        
-        if (is_dragging_splitter_) {
-            if (ImGui::IsMouseDown(0)) {
+
+        if (is_dragging_splitter_)
+        {
+            if (ImGui::IsMouseDown(0))
+            {
                 // Update split ratio based on mouse position
                 float new_ratio = mouse_pos.x / w;
                 split_ratio_ = std::max(0.05f, std::min(0.95f, new_ratio)); // Clamp between 5% and 95%
-            } else {
+            }
+            else
+            {
                 is_dragging_splitter_ = false;
             }
         }
-        
+
         // Set cursor based on hover state
-        if (mouse_over_splitter || is_dragging_splitter_) {
+        if (mouse_over_splitter || is_dragging_splitter_)
+        {
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         }
     }
 
     void renderSplitterBar()
     {
-        if (!split_screen_mode_) return;
-        
+        if (!split_screen_mode_)
+            return;
+
         auto fb_size = framebuffer_size();
         float w = float(fb_size.x());
         float h = float(fb_size.y());
-        
+
         // Calculate splitter position
         float splitter_x = w * split_ratio_;
         float splitter_left = splitter_x - splitter_width_ * 0.5f;
         float splitter_right = splitter_x + splitter_width_ * 0.5f;
-                
+
         // Use ImGui's background draw list for overlay rendering
-        ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
-        
+        ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
+
         // Choose color based on state
         ImU32 bar_color;
         ImU32 handle_color;
-        
-        if (is_dragging_splitter_) {
-            bar_color = IM_COL32(184, 184, 184, 153);   // Light gray when dragging (20% lighter)
-            handle_color = IM_COL32(184, 184, 184, 153);  // Light gray handle (20% lighter)
-        } else if (is_hovering_splitter_) {
-            bar_color = IM_COL32(153, 153, 153, 153);  // Light gray when hovering
-            handle_color = IM_COL32(153, 153, 153, 153); // Light gray handle
-        } else {
-            bar_color = IM_COL32(102, 102, 102, 102);  // Dark gray normally
-            handle_color = IM_COL32(51, 51, 51, 230);   // Dark handle
+
+        if (is_dragging_splitter_)
+        {
+            bar_color = IM_COL32(184, 184, 184, 153);    // Light gray when dragging (20% lighter)
+            handle_color = IM_COL32(184, 184, 184, 153); // Light gray handle (20% lighter)
         }
-        
+        else if (is_hovering_splitter_)
+        {
+            bar_color = IM_COL32(153, 153, 153, 153);    // Light gray when hovering
+            handle_color = IM_COL32(153, 153, 153, 153); // Light gray handle
+        }
+        else
+        {
+            bar_color = IM_COL32(102, 102, 102, 102); // Dark gray normally
+            handle_color = IM_COL32(51, 51, 51, 230); // Dark handle
+        }
+
         // Draw the vertical splitter bar
         draw_list->AddRectFilled(
             ImVec2(splitter_left, 0),
             ImVec2(splitter_right, h),
-            bar_color
-        );
-        
+            bar_color);
+
         // Draw rounded rectangle handle in the center
         float handle_y = h * 0.5f;
         ImVec2 handle_center(splitter_x, handle_y);
-        
+
         // Define rounded rectangle dimensions
         float handle_width = handle_radius_ * 1.2f;   // 1.0f * 1.2 = 1.2f
         float handle_height = handle_radius_ * 2.4f;  // 2.0f * 1.2 = 2.4f
         float corner_radius = handle_radius_ * 0.36f; // 0.3f * 1.2 = 0.36f
-        
+
         ImVec2 rect_min(
             handle_center.x - handle_width * 0.5f,
-            handle_center.y - handle_height * 0.5f
-        );
+            handle_center.y - handle_height * 0.5f);
         ImVec2 rect_max(
             handle_center.x + handle_width * 0.5f,
-            handle_center.y + handle_height * 0.5f
-        );
-        
+            handle_center.y + handle_height * 0.5f);
+
         // Draw the rounded rectangle
         draw_list->AddRectFilled(
             rect_min,
             rect_max,
             handle_color,
-            corner_radius
-        );
-        
+            corner_radius);
+
         // Add a subtle border to the handle for better visibility
         draw_list->AddRect(
             rect_min,
             rect_max,
             IM_COL32(255, 255, 255, 100),
             corner_radius,
-            0, 2.0f
-        );
+            0, 2.0f);
     }
 
     void checkMemoryUsage()
@@ -1746,7 +1915,6 @@ public:
             cube.draw(shader);
         }
     }
-
 
     // Function to load image as OpenGL texture
     GLuint loadImageTexture(const std::string &path)
@@ -1807,36 +1975,38 @@ public:
 
     bool initMapboxMap()
     {
-        try {
+        try
+        {
             std::cout << "Starting Mapbox initialization..." << std::endl;
-            
+
             // Check if we have valid framebuffer size
             auto size = framebuffer_size();
-            if (size.x() <= 0 || size.y() <= 0) {
+            if (size.x() <= 0 || size.y() <= 0)
+            {
                 std::cerr << "Invalid framebuffer size: " << size.x() << "x" << size.y() << std::endl;
                 return false;
             }
             std::cout << "Framebuffer size: " << size.x() << "x" << size.y() << std::endl;
-            
+
             // Create the MapSnapshotter
             map_snapshotter_ = std::make_unique<mbgl::SimpleMapSnapshotter>(
-                mbgl::Size{static_cast<uint32_t>(size.x()), static_cast<uint32_t>(size.y())}, 
-                1.0f, 
+                mbgl::Size{static_cast<uint32_t>(size.x()), static_cast<uint32_t>(size.y())},
+                1.0f,
                 "pk.eyJ1IjoiYXJtYWdlbmlzcyIsImEiOiJjbWRucWJ2enUwNHdwMm5wczE2YWU0ejZ4In0.lVcJwTwb-2n0yGo4bKeWEQ",
-                "AIzaSyDLvsW4iy1cwlRv7JGd6xp49cs60YNuyJs"
-            );
+                "AIzaSyDLvsW4iy1cwlRv7JGd6xp49cs60YNuyJs");
 
             map_snapshotter_->setCircleLatLng(25.651454988788377, -100.29369354881304);
-            
-            if (!map_snapshotter_) {
+
+            if (!map_snapshotter_)
+            {
                 std::cerr << "Failed to create MapSnapshotter" << std::endl;
                 return false;
             }
-            
+
             // 🆕 NEW: Set a Mapbox style URL instead of manual layers
             std::cout << "Setting Mapbox style URL..." << std::endl;
             map_snapshotter_->setStyleURL("mapbox://styles/mapbox/streets-v12"); // Modern streets style
-            
+
             // �� NEW: Set up camera with Mapbox types - CLOSER VIEW for 3D buildings
             std::cout << "Setting up camera with Mapbox types..." << std::endl;
             mbgl::CameraOptions camera;
@@ -1853,36 +2023,38 @@ public:
 
             // Set the geographic bounds for your map view
             mbgl::LatLngBounds mapBounds = mbgl::LatLngBounds::hull(
-                mbgl::LatLng{lat, log},  // Southwest (southwest)
-                mbgl::LatLng{lat, log}   // Northeast (northeast)
+                mbgl::LatLng{lat, log}, // Southwest (southwest)
+                mbgl::LatLng{lat, log}  // Northeast (northeast)
             );
 
             // Update the map snapshotter with bounds
             map_snapshotter_->setMapBounds(mapBounds);
 
-            std::cout << "✅ Geographic bounds set: " 
-                    << "N:" << mapBounds.north() << " S:" << mapBounds.south()
-                    << " E:" << mapBounds.east() << " W:" << mapBounds.west() << std::endl;
-            
+            std::cout << "✅ Geographic bounds set: "
+                      << "N:" << mapBounds.north() << " S:" << mapBounds.south()
+                      << " E:" << mapBounds.east() << " W:" << mapBounds.west() << std::endl;
+
             // 🆕 NEW: Start map loading to fetch the image
             std::cout << "Starting map loading..." << std::endl;
-            map_snapshotter_->snapshot([](std::exception_ptr error, std::vector<uint8_t> imageData, int width, int height) {
+            map_snapshotter_->snapshot([](std::exception_ptr error, std::vector<uint8_t> imageData, int width, int height)
+                                       {
                 if (error) {
                     std::cerr << "❌ Map loading failed" << std::endl;
                 } else {
                     std::cout << "✅ Map loaded successfully: " << width << "x" << height << " (" << imageData.size() << " bytes)" << std::endl;
-                }
-            });
+                } });
 
             std::cout << "✅ Mapbox initialization completed successfully with style URL!" << std::endl;
             std::cout << "   Map will load layers and sources from Mapbox servers" << std::endl;
             return true;
         }
-        catch (const std::exception& e) {
+        catch (const std::exception &e)
+        {
             std::cerr << "Mapbox initialization error: " << e.what() << std::endl;
             return false;
         }
-        catch (...) {
+        catch (...)
+        {
             std::cerr << "Unknown error during Mapbox initialization" << std::endl;
             return false;
         }
@@ -1891,7 +2063,7 @@ public:
     // =================================================================================
     //  ros2 and tf2 related functions
     // =================================================================================
-    
+
     void update_tf_transforms()
     {
 
@@ -2046,7 +2218,8 @@ public:
             }
             topic_names_.push_back(name);
             // Store the first type (most topics have only one type)
-            if (!kv.second.empty()) {
+            if (!kv.second.empty())
+            {
                 topic_types_[name] = kv.second[0];
             }
         }
@@ -2065,7 +2238,7 @@ public:
                     // hz topic clean
                     topic_message_times_.erase(it->first); // Clean up frequency data
                     topic_hz_.erase(it->first);
-                    
+
                     // Clean up topic type data
                     topic_types_.erase(it->first);
 
@@ -2091,7 +2264,7 @@ public:
                 {
                     // OPTIMIZATION 1: Use minimal QoS settings to reduce memory
                     auto s = node_->create_generic_subscription(
-                        name, type_name, 
+                        name, type_name,
                         rclcpp::QoS(1)
                             .keep_last(1)           // Only keep 1 message
                             .best_effort()          // Use best effort delivery
@@ -2141,7 +2314,7 @@ public:
     }
 
     // ================================
-    // ROS2 point cloud topic  
+    // ROS2 point cloud topic
     // ================================
     void removePointCloudTopic(const std::string &topic)
     {
@@ -2172,7 +2345,7 @@ public:
         // create a new CloudTopic and initialize its cloud pointer
         auto ct = std::make_shared<CloudTopic>();
         ct->topic_name = topic;
-        ct->cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZI> >();
+        ct->cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
 
         // subscription callback
         ct->sub = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -2180,7 +2353,7 @@ public:
             [this, ct, topic](sensor_msgs::msg::PointCloud2::UniquePtr msg)
             {
                 // build a fresh cloud
-                auto new_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZI> >();
+                auto new_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
                 pcl::fromROSMsg(*msg, *new_cloud);
 
                 if (new_cloud->empty())
@@ -2230,54 +2403,62 @@ public:
     void addGPSTopic(const std::string &topic)
     {
         // Avoid duplicates
-        if (gnss_subscription_) {
+        if (gnss_subscription_)
+        {
             std::cout << yellow << "GPS subscription already exists for: " << topic << reset << std::endl;
             return;
         }
 
         gnss_subscription_ = node_->create_subscription<sensor_msgs::msg::NavSatFix>(
-            topic, 
+            topic,
             rclcpp::SensorDataQoS(),
-            [this, topic](const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
+            [this, topic](const sensor_msgs::msg::NavSatFix::SharedPtr msg)
+            {
                 // Check if GPS data is valid
-                if (msg->status.status >= sensor_msgs::msg::NavSatStatus::STATUS_FIX) {
+                if (msg->status.status >= sensor_msgs::msg::NavSatStatus::STATUS_FIX)
+                {
                     current_latitude_ = msg->latitude;
                     current_longitude_ = msg->longitude;
                     gps_data_valid_ = true;
-                    
+
                     // Update map circle position (green dot)
-                    if (map_snapshotter_) {
+                    if (map_snapshotter_)
+                    {
                         map_snapshotter_->setCircleLatLng(current_latitude_, current_longitude_);
-                        
+
                         // 🎯 Move the LEFT camera to follow GPS position WITHOUT changing map origin
                         // Convert GPS lat/lng to world space coordinates (meters)
                         glm::vec2 gps_world_pos = map_snapshotter_->latLngToWorldMeters(
-                            mbgl::LatLng(current_latitude_, current_longitude_)
-                        );
-                        
+                            mbgl::LatLng(current_latitude_, current_longitude_));
+
                         // Set the left camera's center to the GPS world position
                         // This makes the camera look at the GPS position while keeping the map origin fixed
                         left_camera_control_.setCenter(Eigen::Vector3f(gps_world_pos.x, gps_world_pos.y, 0.0f));
-                        
-                        std::cout << "📍 Left camera following GPS at world position: (" 
-                                  << gps_world_pos.x << ", " << gps_world_pos.y << ")" << std::endl;
+
+                        // std::cout << "📍 Left camera following GPS at world position: ("
+                        //           << gps_world_pos.x << ", " << gps_world_pos.y << ")" << std::endl;
                     }
-                } else {
+                }
+                else
+                {
                     gps_data_valid_ = false;
                     std::cout << "⚠️ GPS fix not available, status: " << (int)msg->status.status << std::endl;
                 }
             });
-        
+
         std::cout << green << "✅ Subscribed to GPS topic: " << topic << reset << std::endl;
     }
 
     void removeGPSTopic(const std::string &topic)
     {
-        if (gnss_subscription_) {
+        if (gnss_subscription_)
+        {
             std::cout << red << "Removing GPS subscription: " << topic << reset << std::endl;
             gnss_subscription_.reset();
             gps_data_valid_ = false;
-        } else {
+        }
+        else
+        {
             std::cout << red << "No GPS subscription found for: " << topic << reset << std::endl;
         }
     }
@@ -2310,11 +2491,11 @@ public:
                     std::lock_guard lk(marker_array_topics_mutex_);
                     mt->marker_array = msg;
                     mt->last_update = std::chrono::steady_clock::now();
-                    
+
                     if (!msg->markers.empty())
                     {
                         mt->frame_id = msg->markers[0].header.frame_id;
-                        
+
                         try
                         {
                             auto tf_stamped = tf_buffer_->lookupTransform(
@@ -2356,8 +2537,8 @@ public:
     // ================================
     // ROS2 Path topic
     // ================================
-    
-    void addPathTopic(const std::string &topic, int path_type = 0, int color_mode = 0)
+
+    void addPathTopic(const std::string &topic, int path_type = 0, int color_mode = 0, int path_color_selection = 0)
     {
         // avoid duplicates
         {
@@ -2371,8 +2552,9 @@ public:
         auto pt = std::make_shared<PathTopic>();
         pt->topic_name = topic;
         pt->path = std::make_shared<nav_msgs::msg::Path>();
-        pt->path_type = path_type; // Set the path type (0 = normal, 1 = car)
+        pt->path_type = path_type;   // Set the path type (0 = normal, 1 = car)
         pt->color_mode = color_mode; // Set the color mode (0 = flat, 1 = gradient)
+        pt->path_color_selection = path_color_selection; // Set the color selection (0 = orange, 1 = blue)
 
         // subscription callback
         pt->sub = node_->create_subscription<nav_msgs::msg::Path>(
@@ -2383,12 +2565,12 @@ public:
                     std::lock_guard lk(path_topics_mutex_);
                     pt->path = msg;
                     pt->last_update = std::chrono::steady_clock::now();
-                    
+
                     if (!msg->poses.empty())
                     {
                         pt->frame_id = msg->header.frame_id;
                         pt->num_points = msg->poses.size();
-                        
+
                         try
                         {
                             auto tf_stamped = tf_buffer_->lookupTransform(
@@ -2409,23 +2591,33 @@ public:
             std::lock_guard lk(path_topics_mutex_);
             path_topics_.push_back(pt);
         }
-        
-        const char* type_str = (path_type == 0) ? "Normal Line" : "Car Path (1.5m width)";
-        const char* color_str;
-        if (color_mode == 0) {
-            color_str = "Flat";
-        } else if (color_mode == 1) {
-            color_str = "Gradient (Center→Edges)";
-        } else {
-            color_str = "Gradient (Edges→Center)";
+
+        const char *type_str = (path_type == 0) ? "Normal Line" : "Car Path (1.5m width)";
+        const char *color_mode_str;
+        if (color_mode == 0)
+        {
+            color_mode_str = "Flat";
+        }
+        else if (color_mode == 1)
+        {
+            color_mode_str = "Gradient (Center→Edges)";
+        }
+        else
+        {
+            color_mode_str = "Gradient (Edges→Center)";
         }
         
-        if (path_type == 0) {
-            std::cout << green << "✅ Subscribed to Path topic: " << topic 
-                      << " as " << type_str << reset << std::endl;
-        } else {
-            std::cout << green << "✅ Subscribed to Path topic: " << topic 
-                      << " as " << type_str << " [" << color_str << "]" << reset << std::endl;
+        const char *path_color_str = (path_color_selection == 0) ? "Orange" : "Blue";
+
+        if (path_type == 0)
+        {
+            std::cout << green << "✅ Subscribed to Path topic: " << topic
+                      << " as " << type_str << " [" << path_color_str << "]" << reset << std::endl;
+        }
+        else
+        {
+            std::cout << green << "✅ Subscribed to Path topic: " << topic
+                      << " as " << type_str << " [" << color_mode_str << ", " << path_color_str << "]" << reset << std::endl;
         }
     }
 
@@ -2437,18 +2629,21 @@ public:
             if ((*it)->topic_name == topic)
             {
                 std::cout << red << "Removing path topic: " << topic << reset << std::endl;
-                
+
                 // Cleanup OpenGL resources
-                if ((*it)->vao != 0) {
+                if ((*it)->vao != 0)
+                {
                     glDeleteVertexArrays(1, &(*it)->vao);
                 }
-                if ((*it)->vbo != 0) {
+                if ((*it)->vbo != 0)
+                {
                     glDeleteBuffers(1, &(*it)->vbo);
                 }
-                if ((*it)->color_vbo != 0) {
+                if ((*it)->color_vbo != 0)
+                {
                     glDeleteBuffers(1, &(*it)->color_vbo);
                 }
-                
+
                 (*it)->sub.reset();
                 path_topics_.erase(it);
                 return;
@@ -2473,9 +2668,9 @@ private:
     const glk::Drawable *grid_;
 
     // Camera controls - separate for each viewport
-    guik::ArcCameraControl left_camera_control_;   // For map viewport
-    guik::ArcCameraControl right_camera_control_;  // For 3D content viewport
-    guik::ArcCameraControl* active_camera_;        // Currently active camera
+    guik::ArcCameraControl left_camera_control_;  // For map viewport
+    guik::ArcCameraControl right_camera_control_; // For 3D content viewport
+    guik::ArcCameraControl *active_camera_;       // Currently active camera
 
     // control variables for memory, GPU utilization and tf buffer
     size_t last_memory_check_ = 0;
@@ -2503,7 +2698,7 @@ private:
 
     // For topic discovery
     std::mutex topics_mutex_;
-    std::vector<std::string> topic_names_; // Simplified to just store names
+    std::vector<std::string> topic_names_;                     // Simplified to just store names
     std::unordered_map<std::string, std::string> topic_types_; // Map topic name to type
     std::chrono::time_point<std::chrono::steady_clock> last_topic_refresh_;
     const std::chrono::milliseconds topic_refresh_interval_{1000};
@@ -2513,7 +2708,7 @@ private:
     std::chrono::milliseconds alive_threshold_{1000}; // e.g. 1.0s
 
     // topic hz
-    std::unordered_map<std::string, std::deque<std::chrono::steady_clock::time_point> > topic_message_times_;
+    std::unordered_map<std::string, std::deque<std::chrono::steady_clock::time_point>> topic_message_times_;
     std::unordered_map<std::string, float> topic_hz_;
     static constexpr size_t ROS2_LIKE_WINDOW_SIZE = 100;
 
@@ -2530,7 +2725,7 @@ private:
     };
 
     // Store point cloud topics
-    std::vector<std::shared_ptr<CloudTopic> > cloud_topics_;
+    std::vector<std::shared_ptr<CloudTopic>> cloud_topics_;
     std::mutex cloud_topics_mutex_;
     int selected_topic_idx_{-1};
 
@@ -2539,12 +2734,12 @@ private:
     GLuint dbgVbo = 0;
 
     // Store marker array topics
-    std::vector<std::shared_ptr<MarkerArrayTopic> > marker_array_topics_;
+    std::vector<std::shared_ptr<MarkerArrayTopic>> marker_array_topics_;
     std::mutex marker_array_topics_mutex_;
     int selected_marker_topic_idx_{-1};
 
     // Store path topics
-    std::vector<std::shared_ptr<PathTopic> > path_topics_;
+    std::vector<std::shared_ptr<PathTopic>> path_topics_;
     std::mutex path_topics_mutex_;
 
     // lights
@@ -2552,7 +2747,7 @@ private:
 
     // FreeType and text rendering
     TextRenderer text_renderer_;
-    
+
     // Shader-based path rendering
     glk::PathRenderer path_renderer_;
 
@@ -2584,16 +2779,16 @@ private:
     bool gps_data_valid_ = false;
     double current_latitude_ = 25.651454988788377;
     double current_longitude_ = -100.29369354881304;
-    
+
     // Split-screen mode control
     bool split_screen_mode_ = true;
-    
+
     // Resizable splitter variables
-    float split_ratio_ = 0.5f;  // 0.0 = all left, 1.0 = all right, 0.5 = 50/50
+    float split_ratio_ = 0.5f; // 0.0 = all left, 1.0 = all right, 0.5 = 50/50
     bool is_dragging_splitter_ = false;
     bool is_hovering_splitter_ = false;
-    const float splitter_width_ = 8.0f;  // Width of the splitter bar
-    const float handle_radius_ = 12.0f;  // Radius of the circular handle
+    const float splitter_width_ = 8.0f; // Width of the splitter bar
+    const float handle_radius_ = 12.0f; // Radius of the circular handle
 
     // Add these to your Ros2GLViewer class header (private section)
     enum class DockItem
@@ -2626,9 +2821,8 @@ private:
         {"ℹ️", "Info", DockItem::INFO, 0, "1.png"}};
 
     // Point size controls (RViz-style: 0-50 range)
-    float ros2_topic_point_size_ = 100.0f;  // Default 10 (medium size)
+    float ros2_topic_point_size_ = 100.0f; // Default 10 (medium size)
     float pcd_file_point_size_ = 5.0f;     // Default 5 (small size)
-
 };
 
 int main(int argc, char **argv)
@@ -2645,10 +2839,10 @@ int main(int argc, char **argv)
     }
 
     // Set up signal handling for graceful shutdown
-    signal(SIGINT, [](int) {
+    signal(SIGINT, [](int)
+           {
         std::cout << "\n🛑 Received SIGINT, shutting down gracefully..." << std::endl;
-        rclcpp::shutdown();
-    });
+        rclcpp::shutdown(); });
 
     // Run application
     app->run();
