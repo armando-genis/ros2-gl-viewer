@@ -46,7 +46,7 @@ void LaneletLoader::crosswalks(glk::GLSLShader &shader, std::mutex &tf_mutex, co
         // flat color mode
         shader.set_uniform("color_mode", 1);
         // RGBA: here white, but you could pick e.g. (1,1,0,1) for yellow zebra stripes
-        shader.set_uniform("material_color", Eigen::Vector4f(0.545f, 0.627f, 0.643f, 1.0f));
+        shader.set_uniform("material_color", Eigen::Vector4f(0.898f, 0.898f, 0.898f, 1.0f));
         
         // Apply TF transform to map frame
         Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
@@ -71,7 +71,7 @@ void LaneletLoader::stripes(glk::GLSLShader &shader, std::mutex &tf_mutex, const
     if (stripe_tris_count_ > 0)
     {
         shader.set_uniform("color_mode", 1); // flat color
-        shader.set_uniform("material_color", Eigen::Vector4f(0.918f, 0.918f, 0.918f, 1.0f));
+        shader.set_uniform("material_color", Eigen::Vector4f(0.988f, 0.749f, 0.286f, 1.0f));
         
         // Apply TF transform to map frame
         Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
@@ -122,7 +122,7 @@ void LaneletLoader::mapProcessing(lanelet::LaneletMapPtr &t_map)
 
     int crosswalk_count = 0;
     int road_element_count = 0;
-    float z_offset = 0.08f;
+    float z_offset = 0.05f;
     map_lines_.clear();
     stripe_lines_.clear();
     crosswalk_lines_.clear();
@@ -144,7 +144,7 @@ void LaneletLoader::mapProcessing(lanelet::LaneletMapPtr &t_map)
             {
                 if (point.z() > max_z)
                 {
-                    max_z = point.z();
+                    max_z = point.z() - 0.5f;
                 }
             }
 
@@ -152,7 +152,7 @@ void LaneletLoader::mapProcessing(lanelet::LaneletMapPtr &t_map)
             std::vector<Eigen::Vector3f> polygon;
             // Left bound (forward)
             for (const auto &point : ll.leftBound())
-                // polygon.emplace_back(point.x(), point.y(), point.z());
+                // polygon.emplace_back(pmax_zoint.x(), point.y(), point.z());
                 polygon.emplace_back(point.x(), point.y(), max_z); // Use max_z for all points
 
             // Right bound (reverse)

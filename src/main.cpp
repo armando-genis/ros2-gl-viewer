@@ -1282,14 +1282,14 @@ public:
         // ============================================
         // render grid
         // ============================================
-        {
-            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-            T.pretranslate(Eigen::Vector3f(0, 0, -0.02f));
-            shader.set_uniform("color_mode", 1);
-            shader.set_uniform("model_matrix", T.matrix());
-            shader.set_uniform("material_color", Eigen::Vector4f(0.8f, 0.8f, 0.8f, 1.0f));
-            grid_->draw(shader);
-        }
+        // {
+        //     Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+        //     T.pretranslate(Eigen::Vector3f(0, 0, -0.02f));
+        //     shader.set_uniform("color_mode", 1);
+        //     shader.set_uniform("model_matrix", T.matrix());
+        //     shader.set_uniform("material_color", Eigen::Vector4f(0.8f, 0.8f, 0.8f, 1.0f));
+        //     grid_->draw(shader);
+        // }
 
         // ============================================
         // render coordinate frames
@@ -1425,6 +1425,8 @@ public:
             lanelet_loader_.mapLines(shader, tf_mutex_, frame_transforms_);
             lanelet_loader_.crosswalks(shader, tf_mutex_, frame_transforms_);
             lanelet_loader_.stripes(shader, tf_mutex_, frame_transforms_);
+
+            shader.use();
         }
         // ============================================
         // render path topics using shader-based approach
@@ -1667,8 +1669,13 @@ public:
             // Render Mapbox map on left side
             if (map_snapshotter_)
             {
-                // Always try to update texture first (this will upload pending data)
-                map_snapshotter_->updateTexture();
+                // Calculate camera distance to determine update frequency
+                Eigen::Matrix4f view_inv = left_view.inverse();
+                Eigen::Vector3f camera_position = view_inv.block<3,1>(0,3);
+                float camera_distance = camera_position.norm();
+                
+                // Use throttled texture update to reduce flashing at far distances
+                map_snapshotter_->updateTextureThrottled(camera_distance);
 
                 // Now check if we have a valid texture to render
                 if (map_snapshotter_->hasValidTexture())
@@ -1691,9 +1698,6 @@ public:
                 }
             }
 
-            // Clear depth buffer between viewports to prevent cross-contamination
-            glClear(GL_DEPTH_BUFFER_BIT);
-
             // Render cloud volume for left viewport (map view)
             {
                 Eigen::Matrix4f view_inv = left_view.inverse();
@@ -1706,6 +1710,9 @@ public:
                 cloud_renderer_.renderCloudVolume(left_view, proj_left, camera_position);
 
             }
+
+            // Clear depth buffer between viewports to prevent cross-contamination
+            glClear(GL_DEPTH_BUFFER_BIT);
 
             // ============================================
             // RIGHT VIEWPORT: PCD, meshes, lanelet, grid, frames
@@ -2320,10 +2327,10 @@ public:
                     // OPTIMIZATION 1: Use minimal QoS settings to reduce memory
                     auto s = node_->create_generic_subscription(
                         name, type_name,
-                        rclcpp::QoS(1)
-                            .keep_last(1)           // Only keep 1 message
-                            .best_effort()          // Use best effort delivery
-                            .durability_volatile(), // Don't persist messages
+                        rclcpp::QoS(1),
+                            // .keep_last(1)           // Only keep 1 message
+                            // .best_effort()          // Use best effort delivery
+                            // .durability_volatile(), // Don't persist messages
                         [this, name](std::shared_ptr<rclcpp::SerializedMessage> /* msg */)
                         {
                             std::lock_guard<std::mutex> lk(topics_mutex_);
@@ -2842,7 +2849,7 @@ private:
     bool split_screen_mode_ = true;
 
     // Resizable splitter variables
-    float split_ratio_ = 0.5f; // 0.0 = all left, 1.0 = all right, 0.5 = 50/50
+    float split_ratio_ = 0.35f; // 0.0 = all left, 1.0 = all right, 0.5 = 50/50
     bool is_dragging_splitter_ = false;
     bool is_hovering_splitter_ = false;
     const float splitter_width_ = 8.0f; // Width of the splitter bar

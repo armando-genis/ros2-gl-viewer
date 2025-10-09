@@ -2282,6 +2282,29 @@ void SimpleMapSnapshotter::updateTexture() {
     }
 }
 
+void SimpleMapSnapshotter::updateTextureThrottled(float cameraDistance) {
+    static auto last_update = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    auto time_since_update = std::chrono::duration<float>(now - last_update).count();
+    
+    // Adjust update frequency based on camera distance
+    float update_interval;
+    if (cameraDistance > 2000.0f) {
+        update_interval = 1.0f; // Update every 1 second when very far
+    } else if (cameraDistance > 1000.0f) {
+        update_interval = 0.5f; // Update every 0.5 seconds when far
+    } else if (cameraDistance > 500.0f) {
+        update_interval = 0.2f; // Update every 0.2 seconds when medium distance
+    } else {
+        update_interval = 0.1f; // Update every 0.1 seconds when close
+    }
+    
+    if (time_since_update >= update_interval) {
+        updateTexture();
+        last_update = now;
+    }
+}
+
 void SimpleMapSnapshotter::renderMap(const glm::mat4& projection, const glm::mat4& view) {
     if (render_3d_mode_) {
         // Render 3D tile geometry
@@ -2301,7 +2324,7 @@ void SimpleMapSnapshotter::renderMap(const glm::mat4& projection, const glm::mat
         
         // Enable depth testing and render as background
         glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
+        glDepthFunc(GL_LEQUAL); // Use LEQUAL instead of LESS to reduce z-fighting at far distances
         
         // Enable blending for transparency
         glEnable(GL_BLEND);

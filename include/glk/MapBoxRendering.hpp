@@ -244,6 +244,7 @@ public:
     void renderMap(const glm::mat4& projection, const glm::mat4& view);
     void uploadImageToTexture(const std::vector<uint8_t>& imageData, int width, int height);
     void updateTexture(); // Call this from main thread to upload pending texture data
+    void updateTextureThrottled(float cameraDistance); // Throttled update based on camera distance
     GLuint getMapTexture() const { return map_texture_id_; }
     bool hasValidTexture() const { return map_texture_id_ != 0 && map_texture_ready_; }
     
