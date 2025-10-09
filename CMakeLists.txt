@@ -203,6 +203,7 @@ set(GLK_SOURCES
   src/glk/primitives/primitives.cpp
   src/glk/TextRendering.cpp
   src/glk/PathRendering.cpp
+  src/glk/CloudRendering.cpp
   src/glk/PclLoader.cpp
   src/glk/modelUpload.cpp
   src/glk/LaneletLoader.cpp
@@ -312,6 +313,14 @@ add_custom_command(TARGET pointcloud_viewer POST_BUILD
   ${CMAKE_SOURCE_DIR}/src/appicon.png
   ${CMAKE_BINARY_DIR}/appicon.png
   COMMENT "Copying appicon.png to build directory"
+)
+
+# Copy the Perlin noise texture for cloud rendering
+add_custom_command(TARGET pointcloud_viewer POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+  ${CMAKE_SOURCE_DIR}/src/perlin256.png
+  ${CMAKE_BINARY_DIR}/perlin256.png
+  COMMENT "Copying perlin256.png to build directory"
 )
 
 # Install the executable

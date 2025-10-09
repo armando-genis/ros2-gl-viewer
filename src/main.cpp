@@ -42,6 +42,7 @@
 #include <glk/frame_buffer.hpp>
 #include <glk/TextRendering.hpp>
 #include <glk/PathRendering.hpp>
+#include <glk/CloudRendering.hpp>
 #include "glk/PclLoader.hpp"
 #include "glk/LaneletLoader.hpp"
 #include "glk/modelUpload.hpp"
@@ -157,6 +158,7 @@ public:
 
         text_renderer_.cleanupTextRendering();
         path_renderer_.cleanupPathRendering();
+        cloud_renderer_.cleanupCloudRendering();
         // Cleanup GLB shader
         if (glb_shader_program_ != 0)
         {
@@ -435,6 +437,14 @@ public:
         }
         std::cout << green << "Successfully initialized Path shader" << reset << std::endl;
 
+        // ======= CLOUD SHADER INITIALIZATION =======
+        if (!cloud_renderer_.initCloudRendering())
+        {
+            std::cerr << "Failed to initialize cloud rendering" << std::endl;
+            return false;
+        }
+        std::cout << green << "Successfully initialized Cloud shader" << reset << std::endl;
+
         // ======= GLB SHADER INITIALIZATION =======
         if (!model_upload_.createGLBShader(glb_shader_program_))
         {
@@ -612,6 +622,54 @@ public:
         else
         {
             ImGui::Text("  Not initialized");
+        }
+
+        // ============================================
+        // Cloud Rendering Controls
+        // ============================================
+        ImGui::Separator();
+        ImGui::Text("Cloud Rendering:");
+        static bool show_clouds = true;
+        if (ImGui::Checkbox("Enable Clouds", &show_clouds))
+        {
+            std::cout << "Cloud rendering: " << (show_clouds ? "ON" : "OFF") << std::endl;
+        }
+        
+        if (show_clouds)
+        {
+            static float cloud_coverage = 0.65f;
+            static float cloud_height = 600.0f;
+            static float cloud_thickness = 45.0f;
+            static float cloud_absorption = 1.03f;
+            static float wind_speed_x = 5.0f;
+            static float wind_speed_z = 3.0f;
+            static float max_cloud_distance = 10000.0f;
+            
+            if (ImGui::SliderFloat("Cloud Coverage", &cloud_coverage, 0.1f, 0.9f))
+            {
+                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
+                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
+            }
+            if (ImGui::SliderFloat("Cloud Height", &cloud_height, 100.0f, 2000.0f))
+            {
+                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
+                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
+            }
+            if (ImGui::SliderFloat("Cloud Thickness", &cloud_thickness, 10.0f, 100.0f))
+            {
+                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
+                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
+            }
+            if (ImGui::SliderFloat("Wind Speed X", &wind_speed_x, 0.0f, 20.0f))
+            {
+                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
+                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
+            }
+            if (ImGui::SliderFloat("Wind Speed Z", &wind_speed_z, 0.0f, 20.0f))
+            {
+                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
+                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
+            }
         }
 
         // ============================================
@@ -1237,6 +1295,23 @@ public:
     // Helper method to render all 3D content (PCD, meshes, lanelet, grid, frames)
     void render3DContent(glk::GLSLShader &shader, const Eigen::Matrix4f &view, const Eigen::Matrix4f &projection)
     {
+        // ============================================
+        // render sky with clouds (first, as background)
+        // ============================================
+        {
+            // Get camera position from view matrix
+            Eigen::Matrix4f view_inv = view.inverse();
+            Eigen::Vector3f camera_position = view_inv.block<3,1>(0,3);
+            
+            // Update cloud time
+            auto now = std::chrono::steady_clock::now();
+            float time = std::chrono::duration<float>(now - blink_start_).count();
+            cloud_renderer_.updateTime(time);
+            
+            // Render sky with clouds
+            cloud_renderer_.renderSky(view, projection, camera_position);
+        }
+
         // ============================================
         // render grid
         // ============================================
@@ -2750,6 +2825,9 @@ private:
 
     // Shader-based path rendering
     glk::PathRenderer path_renderer_;
+    
+    // Volumetric cloud rendering
+    glk::CloudRenderer cloud_renderer_;
 
     // PCD loader
     PclLoader pcd_loader_;
