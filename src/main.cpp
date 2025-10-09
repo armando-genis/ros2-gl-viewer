@@ -445,6 +445,29 @@ public:
         }
         std::cout << green << "Successfully initialized Cloud shader" << reset << std::endl;
 
+        float cloud_height    = 0.0f;
+        float cloud_thickness = 45.0f;
+        float cloud_coverage  = 0.65f;
+        float cloud_absorp    = 1.03f;
+        float wind_x = 5.0f, wind_z = 3.0f, max_d = 10000.0f;
+
+        cloud_renderer_.updateCloudParameters(
+        cloud_coverage, cloud_height, cloud_thickness,
+        cloud_absorp,   wind_x,       wind_z,          max_d);
+
+        // build a 400×240×400 m box (half-extents 200,120,200)
+        cloud_renderer_.createVolumeBox({200.f, 120.f, 200.f});
+
+        // center of the box at (x=0, y=height+thickness*0.5, z=0)
+        Eigen::Matrix4f M = Eigen::Matrix4f::Identity();
+        M.block<3,1>(0,3) = Eigen::Vector3f(
+        0.f,
+        cloud_height + 0.5f * cloud_thickness,
+        0.f  // <- z = 0
+        );
+        cloud_renderer_.setVolumeModelMatrix(M);
+
+
         // ======= GLB SHADER INITIALIZATION =======
         if (!model_upload_.createGLBShader(glb_shader_program_))
         {
@@ -622,54 +645,6 @@ public:
         else
         {
             ImGui::Text("  Not initialized");
-        }
-
-        // ============================================
-        // Cloud Rendering Controls
-        // ============================================
-        ImGui::Separator();
-        ImGui::Text("Cloud Rendering:");
-        static bool show_clouds = true;
-        if (ImGui::Checkbox("Enable Clouds", &show_clouds))
-        {
-            std::cout << "Cloud rendering: " << (show_clouds ? "ON" : "OFF") << std::endl;
-        }
-        
-        if (show_clouds)
-        {
-            static float cloud_coverage = 0.65f;
-            static float cloud_height = 600.0f;
-            static float cloud_thickness = 45.0f;
-            static float cloud_absorption = 1.03f;
-            static float wind_speed_x = 5.0f;
-            static float wind_speed_z = 3.0f;
-            static float max_cloud_distance = 10000.0f;
-            
-            if (ImGui::SliderFloat("Cloud Coverage", &cloud_coverage, 0.1f, 0.9f))
-            {
-                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
-                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
-            }
-            if (ImGui::SliderFloat("Cloud Height", &cloud_height, 100.0f, 2000.0f))
-            {
-                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
-                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
-            }
-            if (ImGui::SliderFloat("Cloud Thickness", &cloud_thickness, 10.0f, 100.0f))
-            {
-                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
-                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
-            }
-            if (ImGui::SliderFloat("Wind Speed X", &wind_speed_x, 0.0f, 20.0f))
-            {
-                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
-                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
-            }
-            if (ImGui::SliderFloat("Wind Speed Z", &wind_speed_z, 0.0f, 20.0f))
-            {
-                cloud_renderer_.updateCloudParameters(cloud_coverage, cloud_height, cloud_thickness,
-                                                     cloud_absorption, wind_speed_x, wind_speed_z, max_cloud_distance);
-            }
         }
 
         // ============================================
@@ -1295,22 +1270,6 @@ public:
     // Helper method to render all 3D content (PCD, meshes, lanelet, grid, frames)
     void render3DContent(glk::GLSLShader &shader, const Eigen::Matrix4f &view, const Eigen::Matrix4f &projection)
     {
-        // ============================================
-        // render sky with clouds (first, as background)
-        // ============================================
-        {
-            // Get camera position from view matrix
-            Eigen::Matrix4f view_inv = view.inverse();
-            Eigen::Vector3f camera_position = view_inv.block<3,1>(0,3);
-            
-            // Update cloud time
-            auto now = std::chrono::steady_clock::now();
-            float time = std::chrono::duration<float>(now - blink_start_).count();
-            cloud_renderer_.updateTime(time);
-            
-            // Render sky with clouds
-            cloud_renderer_.renderSky(view, projection, camera_position);
-        }
 
         // ============================================
         // render grid
@@ -1523,6 +1482,19 @@ public:
             path_renderer_.renderPaths(view, projection);
             
             shader.use();
+
+            {
+                Eigen::Matrix4f view_inv = view.inverse();
+                Eigen::Vector3f camera_position = view_inv.block<3,1>(0,3);
+
+                auto now  = std::chrono::steady_clock::now();
+                float t   = std::chrono::duration<float>(now - blink_start_).count();
+                cloud_renderer_.updateTime(t);
+
+                cloud_renderer_.renderCloudVolume(
+                    view, projection, camera_position,
+                    /*halfExtents*/ {200.f, 120.f, 200.f});
+            }
         }
 
         // ============================================

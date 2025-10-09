@@ -203,45 +203,6 @@ void CloudRenderer::updateCloudParameters(float coverage, float height, float th
     uniforms_.uMaxCloudDistance = maxDistance;
 }
 
-void CloudRenderer::renderSky(const Eigen::Matrix4f& view, const Eigen::Matrix4f& projection, 
-                             const Eigen::Vector3f& cameraPosition) {
-    if (cloud_shader_program_ == 0 || vertices_.empty()) return;
-    
-    glUseProgram(cloud_shader_program_);
-    
-    // Set uniforms
-    glUniformMatrix4fv(glGetUniformLocation(cloud_shader_program_, "view"), 1, GL_FALSE, view.data());
-    glUniformMatrix4fv(glGetUniformLocation(cloud_shader_program_, "projection"), 1, GL_FALSE, projection.data());
-    glUniform3fv(glGetUniformLocation(cloud_shader_program_, "cameraPosition"), 1, cameraPosition.data());
-    
-    glUniform1f(glGetUniformLocation(cloud_shader_program_, "uTime"), uniforms_.uTime);
-    glUniform3fv(glGetUniformLocation(cloud_shader_program_, "uSunDirection"), 1, uniforms_.uSunDirection.data());
-    glUniform2fv(glGetUniformLocation(cloud_shader_program_, "uResolution"), 1, uniforms_.uResolution.data());
-    glUniform1f(glGetUniformLocation(cloud_shader_program_, "uCloudCoverage"), uniforms_.uCloudCoverage);
-    glUniform1f(glGetUniformLocation(cloud_shader_program_, "uCloudHeight"), uniforms_.uCloudHeight);
-    glUniform1f(glGetUniformLocation(cloud_shader_program_, "uCloudThickness"), uniforms_.uCloudThickness);
-    glUniform1f(glGetUniformLocation(cloud_shader_program_, "uCloudAbsorption"), uniforms_.uCloudAbsorption);
-    glUniform1f(glGetUniformLocation(cloud_shader_program_, "uWindSpeedX"), uniforms_.uWindSpeedX);
-    glUniform1f(glGetUniformLocation(cloud_shader_program_, "uWindSpeedZ"), uniforms_.uWindSpeedZ);
-    glUniform1f(glGetUniformLocation(cloud_shader_program_, "uMaxCloudDistance"), uniforms_.uMaxCloudDistance);
-    
-    // Bind Perlin noise texture
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, perlin_texture_);
-    glUniform1i(glGetUniformLocation(cloud_shader_program_, "t_PerlinNoise"), 0);
-    
-    // Enable depth testing but render back faces
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glCullFace(GL_FRONT); // Render inside of sphere
-    
-    glBindVertexArray(cloud_vao_);
-    glDrawElements(GL_TRIANGLES, indices_.size(), GL_UNSIGNED_INT, 0);
-    glBindVertexArray(0);
-    
-    // Restore culling
-    glCullFace(GL_BACK);
-}
 
 void CloudRenderer::cleanupCloudRendering() {
     if (cloud_vao_ != 0) {
@@ -270,173 +231,187 @@ bool CloudRenderer::createCloudShaders() {
     // Vertex shader
     const char* vertex_shader = R"(
         #version 460 core
-        layout (location = 0) in vec3 position;
-        layout (location = 1) in vec2 uv;
-        layout (location = 2) in vec3 normal;
-        
-        out vec3 vWorldPosition;
-        out vec2 vUv;
-        
+        layout(location=0) in vec3 position;
+        uniform mat4 model;
         uniform mat4 view;
         uniform mat4 projection;
-        
+
+        out vec3 vPosWS;   // world-space position of the vertex
+        out vec3 vPosLS;   // local-space (box) position
+
         void main() {
-            vUv = uv;
-            vec4 worldPosition = vec4(position, 1.0);
-            vWorldPosition = worldPosition.xyz;
-            gl_Position = projection * view * worldPosition;
+            vec4 world = model * vec4(position, 1.0);
+            vPosWS = world.xyz;
+            vPosLS = position;
+            gl_Position = projection * view * world;
         }
     )";
     
     // Fragment shader - converted from the Three.js version
+    // replace your fragment_shader string with this one:
     const char* fragment_shader = R"(
-        #version 460 core
-        precision highp float;
-        precision highp int;
-        
-        uniform float uTime;
-        uniform vec3 uSunDirection;
-        uniform sampler2D t_PerlinNoise;
-        uniform vec2 uResolution;
-        uniform float uCloudCoverage;
-        uniform float uCloudHeight;
-        uniform float uCloudThickness;
-        uniform float uCloudAbsorption;
-        uniform float uWindSpeedX;
-        uniform float uWindSpeedZ;
-        uniform float uMaxCloudDistance;
-        uniform vec3 cameraPosition;
-        
-        in vec3 vWorldPosition;
-        in vec2 vUv;
-        
-        out vec4 FragColor;
-        
-        #define TWO_PI 6.28318530718
-        #define STEPS          22
-        #define LIGHT_STEPS    5
-        
-        vec3 Get_Sky_Color(vec3 rayDir) {
-            float sunAmount = max(0.0, dot(rayDir, uSunDirection));
-            float skyGradient = pow(max(0.0, rayDir.y), 0.5);
-            vec3 skyColor = mix(
-                vec3(0.1, 0.2, 0.4),
-                vec3(0.8, 0.7, 0.5),
-                pow(sunAmount, 12.0)
-            );
-            vec3 horizonColor = vec3(0.7, 0.75, 0.8);
-            skyColor = mix(horizonColor, skyColor, skyGradient);
-            if (sunAmount > 0.999) {
-                skyColor += vec3(1.0, 0.7, 0.3) * pow(sunAmount, 1000.0) * 3.0;
-            }
-            return skyColor;
+    #version 460 core
+    precision highp float;
+
+    in vec3 vPosWS;   // world-space position of the vertex (front face)
+    in vec3 vPosLS;   // local-space position inside the box
+    out vec4 FragColor;
+
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    // --- same uniforms you already had ---
+    uniform float uTime;
+    uniform vec3  uSunDirection;
+    uniform sampler2D t_PerlinNoise;
+    uniform vec2  uResolution;          // kept for parity; not used here
+    uniform float uCloudCoverage;
+    uniform float uCloudHeight;
+    uniform float uCloudThickness;
+    uniform float uCloudAbsorption;
+    uniform float uWindSpeedX;
+    uniform float uWindSpeedZ;
+    uniform float uMaxCloudDistance;    // not used by the box marcher; kept for parity
+    uniform vec3  cameraPosition;
+
+    uniform vec3 uHalfExtents;
+
+    // ===============================
+    // Helpers copied from your sky FS
+    // ===============================
+    #define TWO_PI 6.28318530718
+    #define STEPS          22
+    #define LIGHT_STEPS     5
+
+    float noise3D(in vec3 p) {
+        // Simple 2D lookup using xz; tweak scale if needed
+        vec2 uv = p.xz * 0.01;
+        return texture(t_PerlinNoise, uv).x;
+    }
+
+    const mat3 m = 1.21 * mat3( 0.00,  0.80,  0.60,
+                                -0.80,  0.36, -0.48,
+                                -0.60, -0.48,  0.64);
+
+    float fbm(vec3 p) {
+        float t;
+        float mult = 2.76434;
+        t  = 0.51749673 * noise3D(p); p = m * p * mult;
+        t += 0.25584929 * noise3D(p); p = m * p * mult;
+        t += 0.12527603 * noise3D(p); p = m * p * mult;
+        t += 0.06255931 * noise3D(p);
+        return t;
+    }
+
+    float cloud_density(vec3 posWS, vec3 windOffset, float h01) {
+        vec3 p = posWS * 0.0212242 + windOffset;
+
+        float dens = fbm(p);
+
+        // Coverage gate
+        float cov = 1.0 - uCloudCoverage;
+        dens *= smoothstep(cov, cov + 0.05, dens);
+
+        // Vertical band [uCloudHeight, uCloudHeight + uCloudThickness]
+        float height = posWS.y - uCloudHeight;
+        float heightAtt = 1.0 - clamp(height / uCloudThickness, 0.0, 1.0);
+        heightAtt *= heightAtt;
+
+        dens *= heightAtt;
+        return clamp(dens, 0.0, 1.0);
+    }
+
+    // *** FIXED: give the param a name and keep 4-arg signature ***
+    float cloud_light(vec3 posWS, vec3 dir_stepWS, vec3 windOffset, float cov) {
+        // Unused here, but keeps signature consistent with your call
+        cov += 0.0;
+
+        float T = 1.0;
+        vec3 pos = posWS;
+        for (int i = 0; i < LIGHT_STEPS; ++i) {
+            float dens = cloud_density(pos, windOffset, 0.0);
+            float T_i = exp(-uCloudAbsorption * dens);
+            T *= T_i;
+            pos += dir_stepWS;
+            if (T < 0.01) break;
         }
-        
-        float noise3D(in vec3 p) {
-            vec2 uv = p.xz * 0.01;
-            return texture(t_PerlinNoise, uv).x;
+        return T; // transmittance (0 = dark, 1 = full light)
+    }
+
+    // ===============================
+    // Box-ray intersection (LOCAL space)
+    // ===============================
+    bool intersectBoxLS(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax, out float t0, out float t1) {
+        vec3 inv = 1.0 / rd;
+        vec3 tbot = (bmin - ro) * inv;
+        vec3 ttop = (bmax - ro) * inv;
+        vec3 tmin = min(ttop, tbot);
+        vec3 tmax = max(ttop, tbot);
+        t0 = max(max(tmin.x, tmin.y), tmin.z);
+        t1 = min(min(tmax.x, tmax.y), tmax.z);
+        return t1 > max(t0, 0.0);
+    }
+
+    void main() {
+        // Transform camera into LOCAL space of the box
+        mat4 invModel = inverse(model);
+        vec3 camLS = (invModel * vec4(cameraPosition, 1.0)).xyz;
+
+        // Ray direction in LOCAL space: towards this fragment's local position
+        vec3 dirLS = normalize(vPosLS - camLS);
+
+        // Intersect with the LOCAL AABB
+        vec3 bmin = -uHalfExtents;
+        vec3 bmax =  uHalfExtents;
+        float tEnter, tExit;
+        if (!intersectBoxLS(camLS, dirLS, bmin, bmax, tEnter, tExit)) {
+            discard;
         }
-        
-        const mat3 m = 1.21 * mat3(0.00, 0.80, 0.60,
-                                  -0.80, 0.36, -0.48,
-                                  -0.60, -0.48, 0.64);
-        
-        float fbm(vec3 p) {
-            float t;
-            float mult = 2.76434;
-            t  = 0.51749673 * noise3D(p); p = m * p * mult;
-            t += 0.25584929 * noise3D(p); p = m * p * mult;
-            t += 0.12527603 * noise3D(p); p = m * p * mult;
-            t += 0.06255931 * noise3D(p);
-            return t;
-        }
-        
-        float cloud_density(vec3 pos, vec3 offset, float h) {
-            vec3 p = pos * 0.0212242 + offset;
-            float dens = fbm(p);
-            float cov = 1.0 - uCloudCoverage;
-            dens *= smoothstep(cov, cov + 0.05, dens);
-            float height = pos.y - uCloudHeight;
-            float heightAttenuation = 1.0 - clamp(height / uCloudThickness, 0.0, 1.0);
-            heightAttenuation = heightAttenuation * heightAttenuation;
-            dens *= heightAttenuation;
-            return clamp(dens, 0.0, 1.0);
-        }
-        
-        float cloud_light(vec3 pos, vec3 dir_step, vec3 offset, float cov) {
-            float T = 1.0;
-            for (int i = 0; i < LIGHT_STEPS; i++) {
-                float dens = cloud_density(pos, offset, 0.0);
-                float T_i = exp(-uCloudAbsorption * dens);
+        tEnter = max(tEnter, 0.0);
+
+        // March from entry to exit
+        float marchLen = (tExit - tEnter) / float(STEPS);
+        vec3  posLS = camLS + dirLS * tEnter;
+
+        // Convert LS step to WORLD distance (used in Beer-Lambert)
+        vec3 stepWSvec = (model * vec4(dirLS * marchLen, 0.0)).xyz;
+        float stepWorldDist = length(stepWSvec);
+
+        vec3 posWS = (model * vec4(posLS, 1.0)).xyz;
+
+        // Wind offset (WORLD space)
+        vec3 windOffset = vec3(uTime * -uWindSpeedX, 0.0, uTime * -uWindSpeedZ);
+
+        vec3 C = vec3(0.0);
+        float T = 1.0;
+
+        for (int i = 0; i < STEPS; ++i) {
+            float dens = cloud_density(posWS, windOffset, float(i) / float(STEPS));
+            if (dens > 0.01) {
+                float T_i = exp(-uCloudAbsorption * dens * stepWorldDist);
+                float lightTrans = cloud_light(posWS, normalize(uSunDirection) * 5.0, windOffset, uCloudCoverage);
+
+
+                // Simple shading
+                vec3 base = vec3(0.15, 0.15, 0.2);
+                vec3 sunC = vec3(1.0, 0.9, 0.7);
+                vec3 col = mix(base, sunC, lightTrans);
+
+                C += T * col * dens * stepWorldDist;
                 T *= T_i;
-                pos += dir_step;
-            }
-            return T;
-        }
-        
-        vec4 render_clouds(vec3 rayOrigin, vec3 rayDirection) {
-            float t = (uCloudHeight - rayOrigin.y) / rayDirection.y;
-            if (t < 0.0) return vec4(0.0);
-            if (t > uMaxCloudDistance) return vec4(0.0);
-            float distanceFade = 1.0 - smoothstep(uMaxCloudDistance * 0.6, uMaxCloudDistance, t);
-            vec3 startPos = rayOrigin + rayDirection * t;
-            vec3 windOffset = vec3(uTime * -uWindSpeedX, 0.0, uTime * -uWindSpeedZ);
-            vec3 pos = startPos;
-            float march_step = uCloudThickness / float(STEPS);
-            vec3 dir_step = rayDirection * march_step;
-            vec3 light_step = uSunDirection * 5.0;
-            float covAmount = (sin(mod(uTime * 0.02, TWO_PI))) * 0.1 + 0.5;
-            float coverage = mix(0.4, 0.6, clamp(covAmount, 0.0, 1.0));
-            float T = 1.0;
-            vec3 C = vec3(0);
-            float alpha = 0.0;
-            for (int i = 0; i < STEPS; i++) {
-                if (pos.y < uCloudHeight || pos.y > uCloudHeight + uCloudThickness) {
-                    pos += dir_step;
-                    continue;
-                }
-                float h = float(i) / float(STEPS);
-                float dens = cloud_density(pos, windOffset, h);
-                if (dens > 0.01) {
-                    float T_i = exp(-uCloudAbsorption * dens * march_step);
-                    T *= T_i;
-                    float cloudLight = cloud_light(pos, light_step, windOffset, coverage);
-                    float lightFactor = (exp(h) / 1.75);
-                    float sunContribution = pow(max(0.0, dot(rayDirection, uSunDirection)), 2.0);
-                    vec3 edgeColor = mix(vec3(1.0), vec3(1.0, 0.8, 0.5), sunContribution);
-                    vec3 cloudColor = mix(
-                        vec3(0.15, 0.15, 0.2),
-                        edgeColor,
-                        cloudLight * lightFactor
-                    );
-                    C += T * cloudColor * dens * march_step * 1.5;
-                    alpha += (1.0 - T_i) * (1.0 - alpha);
-                }
-                pos += dir_step;
                 if (T < 0.01) break;
             }
-            vec3 sunColor = vec3(0.9, 0.7, 0.5);
-            vec3 skyColor = vec3(0.4, 0.5, 0.6);
-            C = C * mix(skyColor, sunColor, 0.5 * pow(max(0.0, dot(rayDirection, uSunDirection)), 2.0));
-            alpha *= distanceFade;
-            C *= distanceFade;
-            return vec4(C, alpha);
+            posLS += dirLS * marchLen;
+            posWS = (model * vec4(posLS, 1.0)).xyz;
         }
-        
-        void main() {
-            vec3 rayDirection = normalize(vWorldPosition - cameraPosition);
-            vec3 skyColor = Get_Sky_Color(rayDirection);
-            vec4 clouds = vec4(0.0);
-            if (rayDirection.y > 0.0) {
-                clouds = render_clouds(cameraPosition, rayDirection);
-            }
-            vec3 finalColor = mix(skyColor, clouds.rgb, clouds.a);
-            float t = pow(1.0 - max(0.0, rayDirection.y), 5.0);
-            finalColor = mix(finalColor, vec3(0.65, 0.7, 0.75), 0.5 * t);
-            finalColor = finalColor / (finalColor + vec3(1.0));
-            FragColor = vec4(finalColor, 1.0);
-        }
+
+        float alpha = clamp(1.0 - T, 0.0, 1.0);
+        FragColor = vec4(C, alpha);
+    }
     )";
+
+
     
     cloud_shader_program_ = compileShaderProgram(vertex_shader, fragment_shader);
     return cloud_shader_program_ != 0;
@@ -486,5 +461,123 @@ GLuint CloudRenderer::compileShaderProgram(const char* vertex_source, const char
     
     return program;
 }
+
+void CloudRenderer::renderCloudVolume(const Eigen::Matrix4f& view,
+                                      const Eigen::Matrix4f& projection,
+                                      const Eigen::Vector3f& cameraPosition,
+                                      const Eigen::Vector3f& halfExtents) {
+    if (!vol_vao_ || cloud_shader_program_ == 0) return;
+
+    // Save state
+    GLint prevProgram=0; glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
+    GLboolean wasBlend = glIsEnabled(GL_BLEND);
+    GLboolean wasDepth = glIsEnabled(GL_DEPTH_TEST);
+    GLint prevDepthFunc=0; glGetIntegerv(GL_DEPTH_FUNC, &prevDepthFunc);
+    GLboolean prevDepthMask; glGetBooleanv(GL_DEPTH_WRITEMASK, &prevDepthMask);
+    GLboolean wasCull = glIsEnabled(GL_CULL_FACE);
+
+    // Use a dedicated volume program (compile like cloud_shader_program_, or reuse it with extra uniforms)
+    GLuint prog = cloud_shader_program_; // if you merged the volume FS into this program
+    glUseProgram(prog);
+
+    // Uniforms (reuse your locations or query once & cache)
+    glUniformMatrix4fv(glGetUniformLocation(prog,"model"), 1, GL_FALSE, volume_model_.data());
+    glUniformMatrix4fv(glGetUniformLocation(prog,"view"),  1, GL_FALSE, view.data());
+    glUniformMatrix4fv(glGetUniformLocation(prog,"projection"), 1, GL_FALSE, projection.data());
+    glUniform3fv(glGetUniformLocation(prog,"cameraPosition"), 1, cameraPosition.data());
+    glUniform3fv(glGetUniformLocation(prog,"uHalfExtents"), 1, halfExtents.data());
+
+    // cloud params (same as in your sky code)
+    glUniform1f(glGetUniformLocation(prog,"uTime"), uniforms_.uTime);
+    glUniform3fv(glGetUniformLocation(prog,"uSunDirection"), 1, uniforms_.uSunDirection.data());
+    glUniform1f(glGetUniformLocation(prog,"uCloudCoverage"), uniforms_.uCloudCoverage);
+    glUniform1f(glGetUniformLocation(prog,"uCloudHeight"),   uniforms_.uCloudHeight);
+    glUniform1f(glGetUniformLocation(prog,"uCloudThickness"),uniforms_.uCloudThickness);
+    glUniform1f(glGetUniformLocation(prog,"uCloudAbsorption"),uniforms_.uCloudAbsorption);
+    glUniform1f(glGetUniformLocation(prog,"uWindSpeedX"),    uniforms_.uWindSpeedX);
+    glUniform1f(glGetUniformLocation(prog,"uWindSpeedZ"),    uniforms_.uWindSpeedZ);
+    glUniform1f(glGetUniformLocation(prog,"uMaxCloudDistance"),uniforms_.uMaxCloudDistance);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, perlin_texture_);
+    glUniform1i(glGetUniformLocation(prog,"t_PerlinNoise"), 0);
+
+    // Blend clouds over opaque scene
+    glEnable(GL_BLEND);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_FALSE);        // don’t write depth, just test it
+
+    glDisable(GL_CULL_FACE);      // robust for front faces of box
+
+    glBindVertexArray(vol_vao_);
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+
+    // Restore
+    if (!wasBlend) glDisable(GL_BLEND);
+    if (wasCull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    if (wasDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    glDepthFunc(prevDepthFunc ? prevDepthFunc : GL_LESS);
+    glDepthMask(prevDepthMask);
+    glUseProgram(prevProgram);
+}
+
+void CloudRenderer::createVolumeBox(const Eigen::Vector3f& halfExtents) {
+    volume_half_extents_ = halfExtents;
+
+    // 24 unique verts (4 per face) so we can have correct face interpolation
+    struct V { float x,y,z; };
+    const float hx = halfExtents.x(), hy = halfExtents.y(), hz = halfExtents.z();
+
+    // positions for 6 faces (CCW, triangles)
+    const V verts[] = {
+        // +X face
+        {+hx,-hy,-hz}, {+hx,+hy,-hz}, {+hx,+hy,+hz}, {+hx,-hy,+hz},
+        // -X face
+        {-hx,-hy,+hz}, {-hx,+hy,+hz}, {-hx,+hy,-hz}, {-hx,-hy,-hz},
+        // +Y face
+        {-hx,+hy,-hz}, {-hx,+hy,+hz}, {+hx,+hy,+hz}, {+hx,+hy,-hz},
+        // -Y face
+        {-hx,-hy,+hz}, {-hx,-hy,-hz}, {+hx,-hy,-hz}, {+hx,-hy,+hz},
+        // +Z face
+        {-hx,-hy,+hz}, {+hx,-hy,+hz}, {+hx,+hy,+hz}, {-hx,+hy,+hz},
+        // -Z face
+        {+hx,-hy,-hz}, {-hx,-hy,-hz}, {-hx,+hy,-hz}, {+hx,+hy,-hz},
+    };
+
+    const GLuint idx[] = {
+        0,1,2, 0,2,3,      // +X
+        4,5,6, 4,6,7,      // -X
+        8,9,10, 8,10,11,   // +Y
+        12,13,14, 12,14,15,// -Y
+        16,17,18, 16,18,19,// +Z
+        20,21,22, 20,22,23 // -Z
+    };
+
+    if (vol_vao_ == 0) glGenVertexArrays(1, &vol_vao_);
+    if (vol_vbo_ == 0) glGenBuffers(1, &vol_vbo_);
+    if (vol_ebo_ == 0) glGenBuffers(1, &vol_ebo_);
+
+    glBindVertexArray(vol_vao_);
+
+    glBindBuffer(GL_ARRAY_BUFFER, vol_vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vol_ebo_);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0); // position -> location 0
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(V), (void*)0);
+
+    glBindVertexArray(0);
+
+    std::cout << "Created cloud volume box VAO (half-extents: "
+              << hx << "," << hy << "," << hz << "), 36 indices\n";
+}
+
+
 
 } // namespace glk

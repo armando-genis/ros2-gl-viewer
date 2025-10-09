@@ -49,12 +49,21 @@ public:
     void updateCloudParameters(float coverage, float height, float thickness, 
                               float absorption, float windX, float windZ, float maxDistance);
     
-    // Render the sky with clouds
-    void renderSky(const Eigen::Matrix4f& view, const Eigen::Matrix4f& projection, 
-                   const Eigen::Vector3f& cameraPosition);
     
     // Cleanup resources
     void cleanupCloudRendering();
+
+    // Render the cloud volume
+    void renderCloudVolume(const Eigen::Matrix4f& view, const Eigen::Matrix4f& projection, 
+                          const Eigen::Vector3f& cameraPosition, const Eigen::Vector3f& halfExtents);
+
+    // add to class CloudRenderer
+    GLuint vol_vao_ = 0, vol_vbo_ = 0, vol_ebo_ = 0;
+    Eigen::Matrix4f volume_model_ = Eigen::Matrix4f::Identity();
+    Eigen::Vector3f volume_half_extents_ = Eigen::Vector3f::Zero();
+
+    void createVolumeBox(const Eigen::Vector3f& halfExtents);
+    void setVolumeModelMatrix(const Eigen::Matrix4f& M) { volume_model_ = M; }
 
 private:
     // OpenGL resources
@@ -63,7 +72,10 @@ private:
     GLuint cloud_ebo_;
     GLuint cloud_shader_program_;
     GLuint perlin_texture_;
+
     
+    
+
     // Mesh data
     std::vector<CloudVertex> vertices_;
     std::vector<unsigned int> indices_;
