@@ -173,7 +173,7 @@ public:
     struct GreenAreaGeometry {
         std::vector<glm::vec2> footprint;   // 0..1 in tile space
         std::string type;                   // "park", "forest", "grass", etc.
-        glm::vec4 color = {0.2f, 0.8f, 0.3f, 1.0f};  // Default green color
+        glm::vec4 color = {0.157f, 0.212f, 0.094f, 1.0f};  // Default green color
         float height = 0.0f;                // Height for 3D effect (optional)
     };
     

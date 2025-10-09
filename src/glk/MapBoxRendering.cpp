@@ -72,7 +72,7 @@ class SimpleMapSnapshotter::Impl {
 public:
     Impl(Size size, float pixelRatio, const std::string& accessToken, const std::string& Photorealistic_3D_api_key)
         : size_(size), pixelRatio_(pixelRatio), accessToken_(accessToken), Photorealistic_3D_api_key_(Photorealistic_3D_api_key) {
-        std::cout << "🔧 SimpleMapSnapshotter::Impl constructor" << std::endl;
+        std::cout << "SimpleMapSnapshotter::Impl constructor" << std::endl;
         std::cout << "   Size: " << size_.width << "x" << size_.height << std::endl;
         std::cout << "   Pixel ratio: " << pixelRatio_ << std::endl;
         std::cout << "   Access token: " << accessToken_.substr(0, 20) << "..." << std::endl;
@@ -82,17 +82,17 @@ public:
     }
     
     ~Impl() {
-        std::cout << "🔧 SimpleMapSnapshotter::Impl destructor" << std::endl;
+        std::cout << "SimpleMapSnapshotter::Impl destructor" << std::endl;
         curl_global_cleanup();
     }
     
     void setStyleURL(const std::string& styleURL) {
-        std::cout << "�� Setting style URL: " << styleURL << std::endl;
+        std::cout << "Setting style URL: " << styleURL << std::endl;
         styleURL_ = styleURL;
     }
 
     void setCameraOptions(const CameraOptions& camera) {
-        std::cout << "📷 Setting camera options:" << std::endl;
+        std::cout << "Setting camera options:" << std::endl;
         
         if (camera.center) {
             std::cout << "   Center: " << camera.center->latitude() << ", " << camera.center->longitude() << std::endl;
@@ -122,16 +122,16 @@ public:
     }
         
     void snapshot(Callback callback) {
-        std::cout << "�� Snapshot requested!" << std::endl;
+        std::cout << "Snapshot requested!" << std::endl;
         
         // Run in background thread
         std::thread([this, callback]() {
             try {
                 auto imageData = fetchMapImage();
-                std::cout << "✅ Map image fetched successfully!" << std::endl;
+                std::cout << "Map image fetched successfully!" << std::endl;
                 callback(nullptr, imageData, size_.width, size_.height);
             } catch (const std::exception& e) {
-                std::cerr << "❌ Snapshot error: " << e.what() << std::endl;
+                std::cerr << "Snapshot error: " << e.what() << std::endl;
                 auto fallbackData = generateFallbackImage();
                 callback(std::make_exception_ptr(e), fallbackData, size_.width, size_.height);
             }
@@ -139,7 +139,7 @@ public:
     }
     
     std::vector<uint8_t> generateFallbackImage() {
-        std::cout << "🔄 Generating fallback image..." << std::endl;
+        std::cout << "Generating fallback image..." << std::endl;
         
         int width = size_.width;
         int height = size_.height;
@@ -168,7 +168,7 @@ private:
         
         // Check if camera options are set
         if (!camera_.center || !camera_.zoom) {
-            std::cout << "⚠️ Camera options not fully set, using default values" << std::endl;
+            std::cout << "Camera options not fully set, using default values" << std::endl;
             url += "0,0,1"; // Default to center of world, zoom level 1
         } else {
             // Use center point and zoom level that matches our 3D tile system
@@ -183,7 +183,7 @@ private:
             url += std::to_string(center_lng) + "," + std::to_string(center_lat);
             url += "," + std::to_string(texture_zoom);
             
-            std::cout << "📍 2D Texture Geographic Area:" << std::endl;
+            std::cout << "2D Texture Geographic Area:" << std::endl;
             std::cout << "   Center: " << center_lat << ", " << center_lng << std::endl;
             std::cout << "   Zoom: " << (int)texture_zoom << " (for detailed texture)" << std::endl;
         }
@@ -191,7 +191,7 @@ private:
         url += "/" + std::to_string(size_.width) + "x" + std::to_string(size_.height);
         url += "@2x?access_token=" + accessToken_;
         
-        std::cout << "🌐 Fetching map that matches 3D tiles:" << std::endl;
+        std::cout << "Fetching map that matches 3D tiles:" << std::endl;
         std::cout << "   " << url << std::endl;
         
         return url;
@@ -219,7 +219,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
         
-        std::cout << "📡 Sending HTTP request..." << std::endl;
+        std::cout << "Sending HTTP request..." << std::endl;
         
         CURLcode res = curl_easy_perform(curl);
         
@@ -227,12 +227,12 @@ private:
             long http_code = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
             
-            std::cout << "✅ HTTP Response:" << std::endl;
+            std::cout << "HTTP Response:" << std::endl;
             std::cout << "   Status code: " << http_code << std::endl;
             std::cout << "   Response size: " << imageData.size() << " bytes" << std::endl;
             
             if (http_code != 200) {
-                std::cerr << "⚠️ Warning: HTTP status code is " << http_code << std::endl;
+                std::cerr << "Warning: HTTP status code is " << http_code << std::endl;
                 if (http_code >= 400) {
                     throw std::runtime_error("HTTP error: " + std::to_string(http_code));
                 }
@@ -246,7 +246,7 @@ private:
             
         } else {
             std::string error_msg = "CURL error: " + std::string(curl_easy_strerror(res));
-            std::cerr << "❌ " << error_msg << std::endl;
+            std::cerr << error_msg << std::endl;
             throw std::runtime_error(error_msg);
         }
         
@@ -256,17 +256,17 @@ private:
     
     void validateImageData(const std::vector<uint8_t>& imageData) {
         if (imageData.size() >= 4) {
-            std::cout << "�� Image validation:" << std::endl;
+            std::cout << "Image validation:" << std::endl;
             printf("   First 4 bytes: %02X %02X %02X %02X\n", 
                    imageData[0], imageData[1], imageData[2], imageData[3]);
             
             if (imageData[0] == 0xFF && imageData[1] == 0xD8) {
-                std::cout << "   ✅ Valid JPEG format detected" << std::endl;
+                std::cout << "Valid JPEG format detected" << std::endl;
             } else if (imageData[0] == 0x89 && imageData[1] == 0x50 && 
                        imageData[2] == 0x4E && imageData[3] == 0x47) {
-                std::cout << "   ✅ Valid PNG format detected" << std::endl;
+                std::cout << "Valid PNG format detected" << std::endl;
             } else {
-                std::cout << "   ❓ Unknown format (proceeding anyway)" << std::endl;
+                std::cout << "Unknown format (proceeding anyway)" << std::endl;
             }
         }
     }
@@ -302,22 +302,22 @@ SimpleMapSnapshotter::SimpleMapSnapshotter(Size size, float pixelRatio, const st
     , pixelRatio_(pixelRatio)
     , accessToken_(accessToken)
     , Photorealistic_3D_api_key_(Photorealistic_3D_api_key)
-    , current_bounds_(LatLngBounds::world())  // 🆕 NEW: Initialize with world bounds
-    , transform_state_(std::make_unique<mbgl::TransformState>())  // 🆕 NEW: Create TransformState
-    , current_center_(LatLng(0, 0))  // 🆕 NEW: Initialize center
-    , current_zoom_(1.0)  // 🆕 NEW: Initialize zoom
+    , current_bounds_(LatLngBounds::world())  //Initialize with world bounds
+    , transform_state_(std::make_unique<mbgl::TransformState>())  //Create TransformState
+    , current_center_(LatLng(0, 0))  //Initialize center
+    , current_zoom_(1.0)
     , impl(std::make_unique<Impl>(size, pixelRatio, accessToken, Photorealistic_3D_api_key)) {
     
-    std::cout << "🔧 SimpleMapSnapshotter constructor" << std::endl;
+    std::cout << "SimpleMapSnapshotter constructor" << std::endl;
     
     // Initialize matrices
     projection_matrix_ = glm::mat4(1.0f);
     view_matrix_ = glm::mat4(1.0f);
     
-    // 🆕 NEW: Initialize TransformState with size only
+    //Initialize TransformState with size only
     transform_state_->setSize(mbgl::Size{static_cast<uint32_t>(size.width), static_cast<uint32_t>(size.height)});
     
-    std::cout << "✅ SimpleMapSnapshotter initialized successfully with geographic data" << std::endl;
+    std::cout << "SimpleMapSnapshotter initialized successfully with geographic data" << std::endl;
     std::cout << "   Initial bounds: world" << std::endl;
     std::cout << "   TransformState created and initialized" << std::endl;
 
@@ -330,12 +330,12 @@ SimpleMapSnapshotter::SimpleMapSnapshotter(Size size, float pixelRatio, const st
         initializeCircleWalls();
     }
 
-    std::cout << "✅ Shaders and geometry initialized successfully" << std::endl;
+    std::cout << "Shaders and geometry initialized successfully" << std::endl;
 
 }
 
 SimpleMapSnapshotter::~SimpleMapSnapshotter() {
-    std::cout << "�� Enhanced SimpleMapSnapshotter destructor" << std::endl;
+    std::cout << "Enhanced SimpleMapSnapshotter destructor" << std::endl;
     if (landmark_thread_.joinable()) {
         {
             std::lock_guard<std::mutex> lk(landmark_mutex_);
@@ -358,7 +358,7 @@ void SimpleMapSnapshotter::setCameraOptions(const CameraOptions& camera) {
     // Store the camera options for tile calculations
     camera_ = camera;
     
-    // �� NEW: Update bounds when camera changes
+    //Update bounds when camera changes
     if (camera.center && camera.zoom) {
         double lat = camera.center->latitude();
         double lng = camera.center->longitude();
@@ -371,9 +371,9 @@ void SimpleMapSnapshotter::setCameraOptions(const CameraOptions& camera) {
         // Snap to the geometry zoom you actually use for tiles (same rule as getVisibleTilesForCurrentView)
         geometry_zoom_ = static_cast<uint8_t>(std::max(8.0, std::min(std::floor(zoom + 1e-6), 15.0)));
 
-        // ✅ 1 tile = meters_per_tile_ meters (world units)
+        //1 tile = meters_per_tile_ meters (world units)
         meters_per_tile_ = static_cast<float>(metersPerTile(lat, geometry_zoom_));
-        std::cout << "📏 meters_per_tile_ = " << meters_per_tile_
+        std::cout << "meters_per_tile_ = " << meters_per_tile_
                   << " @ lat=" << lat << " z=" << int(geometry_zoom_) << "\n";
         
         // Calculate bounds based on zoom level and viewport size
@@ -394,7 +394,7 @@ void SimpleMapSnapshotter::setCameraOptions(const CameraOptions& camera) {
         
         setMapBounds(newBounds);
         
-        std::cout << "✅ Camera options set and bounds updated" << std::endl;
+        std::cout << "Camera options set and bounds updated" << std::endl;
     }
 }
 
@@ -403,7 +403,7 @@ void SimpleMapSnapshotter::snapshot(Callback callback) {
     loading_ = true;
     map_texture_ready_ = false;
     
-    std::cout << "📸 Starting snapshot with loading state: " << (loading_ ? "true" : "false") << std::endl;
+    std::cout << "Starting snapshot with loading state: " << (loading_ ? "true" : "false") << std::endl;
     
     // Use the callback pattern
     impl->snapshot([this, callback](std::exception_ptr error, std::vector<uint8_t> imageData, int width, int height) {
@@ -411,7 +411,7 @@ void SimpleMapSnapshotter::snapshot(Callback callback) {
         loading_ = false;
         
         if (!error) {
-            std::cout << "🎉 Snapshot callback success!" << std::endl;
+            std::cout << "Snapshot callback success!" << std::endl;
             std::cout << "   Received image: " << width << "x" << height << std::endl;
             std::cout << "   Data size: " << imageData.size() << " bytes" << std::endl;
             
@@ -421,10 +421,10 @@ void SimpleMapSnapshotter::snapshot(Callback callback) {
             pending_width_ = width;
             pending_height_ = height;
             has_pending_texture_ = true;
-            std::cout << "✅ Image data ready for GPU upload on main thread" << std::endl;
+            std::cout << "Image data ready for GPU upload on main thread" << std::endl;
             
         } else {
-            std::cerr << "❌ Snapshot callback error" << std::endl;
+            std::cerr << "Snapshot callback error" << std::endl;
         }
         
         // Call the original callback
@@ -436,7 +436,7 @@ void SimpleMapSnapshotter::snapshot(Callback callback) {
 // step2: Geographic data management methods
 // =============================================================
 void SimpleMapSnapshotter::setMapBounds(const LatLngBounds& bounds) {
-    std::cout << "🗺️ Setting map bounds:" << std::endl;
+    std::cout << "Setting map bounds:" << std::endl;
     std::cout << "   North: " << bounds.north() << std::endl;
     std::cout << "   South: " << bounds.south() << std::endl;
     std::cout << "   East: " << bounds.east() << std::endl;
@@ -449,10 +449,10 @@ void SimpleMapSnapshotter::setMapBounds(const LatLngBounds& bounds) {
         // We can only set the size, not the position/zoom
         transform_state_->setSize(mbgl::Size{static_cast<uint32_t>(size_.width), static_cast<uint32_t>(size_.height)});
         
-        std::cout << "✅ TransformState size updated" << std::endl;
+        std::cout << "TransformState size updated" << std::endl;
     }
     
-    // �� NEW: Calculate and store the center and zoom for later use
+    //Calculate and store the center and zoom for later use
     double centerLat = (bounds.north() + bounds.south()) / 2.0;
     double centerLng = (bounds.east() + bounds.west()) / 2.0;
     
@@ -469,20 +469,17 @@ void SimpleMapSnapshotter::setMapBounds(const LatLngBounds& bounds) {
     std::cout << "   Calculated zoom: " << zoom << std::endl;
     
     
-    std::cout << "✅ Map bounds set successfully" << std::endl;
+    std::cout << "Map bounds set successfully" << std::endl;
 }
 
 
 void SimpleMapSnapshotter::updateMapBoundsFromCamera() {
     if (!impl) {
-        std::cout << "⚠️ Impl not available, cannot update bounds from camera" << std::endl;
+        std::cout << "Impl not available, cannot update bounds from camera" << std::endl;
         return;
     }
     
-    std::cout << "🗺️ Updating map bounds from camera..." << std::endl;
-    
-    // Get camera from impl (you'll need to add a getter)
-    // For now, we'll calculate bounds based on current camera and size
+    std::cout << "Updating map bounds from camera..." << std::endl;
     
     // Calculate bounds based on current view
     if (current_bounds_.north() != 0 || current_bounds_.south() != 0) {
@@ -513,9 +510,9 @@ void SimpleMapSnapshotter::updateMapBoundsFromCamera() {
         
         setMapBounds(newBounds);
         
-        std::cout << "✅ Map bounds updated from camera view" << std::endl;
+        std::cout << "Map bounds updated from camera view" << std::endl;
     } else {
-        std::cout << "⚠️ No existing bounds to update from" << std::endl;
+        std::cout << "No existing bounds to update from" << std::endl;
     }
 }
 
@@ -537,10 +534,10 @@ std::vector<SimpleMapSnapshotter::TileID> SimpleMapSnapshotter::calculateVisible
     
     uint32_t min_x = lngToTileX(bounds.west(), zoom);
     uint32_t max_x = lngToTileX(bounds.east(), zoom);
-    uint32_t min_y = latToTileY(bounds.north(), zoom);  // Note: Y is flipped
+    uint32_t min_y = latToTileY(bounds.north(), zoom);  //Y is flipped
     uint32_t max_y = latToTileY(bounds.south(), zoom);
     
-    std::cout << "🔍 Calculating tiles for zoom " << (int)zoom << std::endl;
+    std::cout << "Calculating tiles for zoom " << (int)zoom << std::endl;
     std::cout << "   X range: " << min_x << " to " << max_x << std::endl;
     std::cout << "   Y range: " << min_y << " to " << max_y << std::endl;
     
@@ -560,7 +557,7 @@ std::string SimpleMapSnapshotter::buildTileURL(const TileID& tile, const std::st
                       std::to_string(tile.x) + "/" + 
                       std::to_string(tile.y) + "@2x.jpg?access_token=" + accessToken_;
     
-    std::cout << "🌐 Tile URL: " << url << std::endl;
+    std::cout << "Tile URL: " << url << std::endl;
     return url;
 }
 
@@ -572,7 +569,7 @@ void SimpleMapSnapshotter::loadTile(const TileID& tile) {
         return;
     }
     
-    std::cout << "📦 Loading tile: " << tile_key << std::endl;
+    std::cout << "Loading tile: " << tile_key << std::endl;
     
     // Create tile data entry
     TileData tile_data;
@@ -611,10 +608,10 @@ void SimpleMapSnapshotter::loadTile(const TileID& tile) {
                 tile_texture.tile = tile;
                 pending_tile_textures_.push(tile_texture);
                 
-                std::cout << "✅ Tile loaded: " << tile_key << std::endl;
+                std::cout << "Tile loaded: " << tile_key << std::endl;
             }
         } catch (const std::exception& e) {
-            std::cerr << "❌ Tile load error: " << e.what() << std::endl;
+            std::cerr << "Tile load error: " << e.what() << std::endl;
         }
     }).detach();
 }
@@ -655,7 +652,7 @@ glm::vec3 SimpleMapSnapshotter::getTileWorldPosition(const TileID& tile) {
     float wx = dx * meters_per_tile_;
     float wy = -dy * meters_per_tile_; // keep your +Y=north convention
 
-    // ⬇️ Anchor shift: subtract the camera's sub-tile offset (center (0.5,0.5) → world origin)
+    // Anchor shift: subtract the camera's sub-tile offset (center (0.5,0.5) → world origin)
     wx -= float((fx - 0.5) * meters_per_tile_);
     wy -= float((0.5 - fy) * meters_per_tile_);
 
@@ -701,31 +698,31 @@ glm::vec2 SimpleMapSnapshotter::latLngToWorldMeters(const LatLng& ll) {
 // =============================================================
 void SimpleMapSnapshotter::loadStyleFromMapbox() {
     // For now, this is a placeholder. We'll implement style loading later
-    std::cout << "📜 Loading style (placeholder): " << current_style_url_ << std::endl;
+    std::cout << "Loading style (placeholder): " << current_style_url_ << std::endl;
 }
 
 // =============================================================
 // step4: Geometry processing implementation (Mapbox-style)
 // =============================================================
 SimpleMapSnapshotter::GeometryBuffer SimpleMapSnapshotter::generateTileGeometry(const TileID& tile) {
-    std::cout << "🔺 Generating STREET geometry for tile " << (int)tile.z << "/" << tile.x << "/" << tile.y << std::endl;
+    std::cout << "Generating STREET geometry for tile " << (int)tile.z << "/" << tile.x << "/" << tile.y << std::endl;
 
     GeometryBuffer buffer;
     buffer.type = GeometryType::LINE; // Changed to LINE type for streets
             
-        // ✅ NEW: Fetch REAL building data from Mapbox vector tiles
+        // Fetch REAL building data from Mapbox vector tiles
         std::vector<BuildingGeometry> tile_buildings;
-        std::cout << "🏢 Fetching real building data from Mapbox..." << std::endl;
+        std::cout << "Fetching real building data from Mapbox..." << std::endl;
         fetchVectorTileBuildings(tile, tile_buildings);
         
-        // ✅ NEW: Fetch REAL road data from Mapbox vector tiles (do this BEFORE building fallback)
+        //Fetch REAL road data from Mapbox vector tiles (do this BEFORE building fallback)
         std::vector<RoadGeometry> tile_roads;
-        std::cout << "🛣️ Fetching real Mapbox vector tile streets..." << std::endl;
+        std::cout << "Fetching real Mapbox vector tile streets..." << std::endl;
         fetchVectorTileStreets(tile, tile_roads); // Use real vector tiles with proper positioning
         
-        // ✅ NEW: Fetch REAL green area data from Mapbox vector tiles
+        //Fetch REAL green area data from Mapbox vector tiles
         std::vector<GreenAreaGeometry> tile_green_areas;
-        std::cout << "🌳 Fetching real Mapbox vector tile green areas..." << std::endl;
+        std::cout << "Fetching real Mapbox vector tile green areas..." << std::endl;
         fetchVectorTileGreenAreas(tile, tile_green_areas);
         
         
@@ -733,71 +730,71 @@ SimpleMapSnapshotter::GeometryBuffer SimpleMapSnapshotter::generateTileGeometry(
         if (tile_buildings.empty()) {
             // Only generate sample buildings if we also have no roads
             if (tile_roads.empty()) {
-                std::cout << "⚠️ No real building data and no roads, using sample buildings..." << std::endl;
+                std::cout << "No real building data and no roads, using sample buildings..." << std::endl;
                 try {
-                    std::cout << "🏢 Generating sample buildings..." << std::endl;
+                    std::cout << "Generating sample buildings..." << std::endl;
                 } catch (const std::exception& e) {
-                    std::cerr << "❌ Sample building generation failed: " << e.what() << std::endl;
+                    std::cerr << "Sample building generation failed: " << e.what() << std::endl;
                     tile_buildings.clear();
                 } catch (...) {
-                    std::cerr << "❌ Unknown error in sample building generation" << std::endl;
+                    std::cerr << "Unknown error in sample building generation" << std::endl;
                     tile_buildings.clear();
                 }
             } else {
-                std::cout << "🛣️ No buildings but has roads - proceeding with road-only tile" << std::endl;
+                std::cout << "No buildings but has roads - proceeding with road-only tile" << std::endl;
             }
         }
         
         // If still no buildings after fallback AND no roads, we still want to process the tile for terrain
         if (tile_buildings.empty() && tile_roads.empty()) {
-            std::cout << "🏞️ No buildings or roads available for tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+            std::cout << "No buildings or roads available for tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                       << ", but will still generate terrain" << std::endl;
         }
     
     // Check if this tile has any urban features (buildings, roads, or green areas)
     if (tile_buildings.empty() && tile_roads.empty() && tile_green_areas.empty()) {
-        std::cout << "🏞️ Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << " appears to be terrain/water only (no buildings, roads, or green areas), but will still generate terrain" << std::endl;
     }
     
     // Log what urban features we found
     if (!tile_buildings.empty() && !tile_roads.empty() && !tile_green_areas.empty()) {
-        std::cout << "🏙️ Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << " has buildings (" << tile_buildings.size() << "), roads (" << tile_roads.size() 
                   << "), and green areas (" << tile_green_areas.size() << ")" << std::endl;
     } else if (!tile_buildings.empty() && !tile_roads.empty()) {
-        std::cout << "🏙️ Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << " has both buildings (" << tile_buildings.size() << ") and roads (" << tile_roads.size() << ")" << std::endl;
     } else if (!tile_buildings.empty() && !tile_green_areas.empty()) {
-        std::cout << "🏢🌳 Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << " has buildings (" << tile_buildings.size() << ") and green areas (" << tile_green_areas.size() << ")" << std::endl;
     } else if (!tile_roads.empty() && !tile_green_areas.empty()) {
-        std::cout << "🛣️🌳 Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << " has roads (" << tile_roads.size() << ") and green areas (" << tile_green_areas.size() << ")" << std::endl;
     } else if (!tile_buildings.empty()) {
-        std::cout << "🏢 Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << " has buildings (" << tile_buildings.size() << ") but no roads or green areas" << std::endl;
     } else if (!tile_roads.empty()) {
-        std::cout << "🛣️ Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << " has roads (" << tile_roads.size() << ") but no buildings or green areas" << std::endl;
     } else if (!tile_green_areas.empty()) {
-        std::cout << "🌳 Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "Tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << " has green areas (" << tile_green_areas.size() << ") but no buildings or roads" << std::endl;
     }
     
     // Fallback to sample roads if no real data available
     if (tile_roads.empty()) {
-        std::cout << "⚠️ No real road data, using sample roads..." << std::endl;
+        std::cout << "No real road data, using sample roads..." << std::endl;
     }
     
     // Fallback to sample green areas if no real data available
     if (tile_green_areas.empty()) {
-        std::cout << "⚠️ No real green area data, using sample green areas..." << std::endl;
+        std::cout << "No real green area data, using sample green areas..." << std::endl;
     }
     
     // If still no roads after fallback, create minimal roads to prevent crashes
     if (tile_roads.empty()) {
-        std::cout << "⚠️ No roads available for tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
+        std::cout << "No roads available for tile " << (int)tile.z << "/" << tile.x << "/" << tile.y 
                   << ", creating minimal road network" << std::endl;
         
         // Create a simple cross-shaped road network
@@ -814,7 +811,7 @@ SimpleMapSnapshotter::GeometryBuffer SimpleMapSnapshotter::generateTileGeometry(
         tile_roads.push_back(vertical_road);
     }
     
-    std::cout << "🛣️ Generated " << tile_roads.size() << " roads for tile " 
+    std::cout << "Generated " << tile_roads.size() << " roads for tile " 
               << (int)tile.z << "/" << tile.x << "/" << tile.y << std::endl;
     
     // Debug: Check if roads span full tile area (0-1 coordinates)
@@ -823,12 +820,11 @@ SimpleMapSnapshotter::GeometryBuffer SimpleMapSnapshotter::generateTileGeometry(
             auto& road = tile_roads[i];
             glm::vec2 start = road.centerline.front();
             glm::vec2 end = road.centerline.back();
-            std::cout << "🛣️ Road " << i << ": (" << start.x << ", " << start.y 
+            std::cout << "Road " << i << ": (" << start.x << ", " << start.y 
                       << ") → (" << end.x << ", " << end.y << ") width=" << road.width << std::endl;
         }
     }
     
-    // ✅ ENABLED: Create building, road, and/or green area geometry based on what's available
     GeometryBuffer building_buffer, road_buffer, green_area_buffer;
     
     if (!tile_buildings.empty()) {
@@ -873,7 +869,7 @@ SimpleMapSnapshotter::GeometryBuffer SimpleMapSnapshotter::generateTileGeometry(
             vertex_offset += buf.vertices.size();
         }
         
-        std::cout << "✅ Generated " << description << " geometry: " << buffer.vertices.size() 
+        std::cout << "Generated " << description << " geometry: " << buffer.vertices.size() 
                   << " vertices, " << buffer.indices.size() << " indices" << std::endl;
     };
     
@@ -991,7 +987,7 @@ void SimpleMapSnapshotter::uploadGeometryToGPU(GeometryBuffer& buffer) {
         return;
     }
     
-    std::cout << "📤 Uploading geometry to GPU: " << buffer.vertices.size() << " vertices" << std::endl;
+    std::cout << "Uploading geometry to GPU: " << buffer.vertices.size() << " vertices" << std::endl;
     
     // Generate OpenGL objects
     glGenVertexArrays(1, &buffer.vao);
@@ -1035,7 +1031,7 @@ void SimpleMapSnapshotter::uploadGeometryToGPU(GeometryBuffer& buffer) {
     glBindVertexArray(0);
     buffer.uploaded = true;
     
-    std::cout << "✅ Geometry uploaded (VAO: " << buffer.vao << ")" << std::endl;
+    std::cout << "Geometry uploaded (VAO: " << buffer.vao << ")" << std::endl;
 }
 
 void SimpleMapSnapshotter::cleanupGeometry(GeometryBuffer& buffer) {
@@ -1061,11 +1057,10 @@ void SimpleMapSnapshotter::fetchVectorTileStreets(const TileID& tile, std::vecto
                      std::to_string((int)tile.z) + "/" + std::to_string(tile.x) + "/" + std::to_string(tile.y) + 
                      ".mvt?access_token=" + accessToken_;
     
-    std::cout << "🌐 Fetching vector tile data: " << url << std::endl;
-    
-    // IMPORTANT: Avoid segfault by using system command instead of CURL in OpenGL thread
+    std::cout << "Fetching vector tile data: " << url << std::endl;
+
     // This is safer for your custom OpenGL context
-    std::cout << "📡 Downloading vector tile using safe method..." << std::endl;
+    std::cout << "Downloading vector tile using safe method..." << std::endl;
     
     // Create a temporary file for the download
     std::string tempFile = "/tmp/tile_" + std::to_string(tile.z) + "_" + 
@@ -1076,14 +1071,14 @@ void SimpleMapSnapshotter::fetchVectorTileStreets(const TileID& tile, std::vecto
     int result = std::system(command.c_str());
     
     if (result != 0) {
-        std::cout << "❌ Failed to download vector tile using system command" << std::endl;
+        std::cout << "Failed to download vector tile using system command" << std::endl;
         return;
     }
     
     // Read the downloaded file
     std::ifstream file(tempFile, std::ios::binary);
     if (!file.is_open()) {
-        std::cout << "❌ Failed to open downloaded tile file" << std::endl;
+        std::cout << "Failed to open downloaded tile file" << std::endl;
         return;
     }
     
@@ -1093,7 +1088,7 @@ void SimpleMapSnapshotter::fetchVectorTileStreets(const TileID& tile, std::vecto
     file.seekg(0, std::ios::beg);
     
     if (size <= 0) {
-        std::cout << "❌ Empty or invalid tile file" << std::endl;
+        std::cout << "Empty or invalid tile file" << std::endl;
         file.close();
         std::remove(tempFile.c_str());
         return;
@@ -1102,7 +1097,7 @@ void SimpleMapSnapshotter::fetchVectorTileStreets(const TileID& tile, std::vecto
     // Read the data
     std::vector<uint8_t> mvtData(size);
     if (!file.read(reinterpret_cast<char*>(mvtData.data()), size)) {
-        std::cout << "❌ Failed to read tile data" << std::endl;
+        std::cout << "Failed to read tile data" << std::endl;
         file.close();
         std::remove(tempFile.c_str());
         return;
@@ -1111,12 +1106,12 @@ void SimpleMapSnapshotter::fetchVectorTileStreets(const TileID& tile, std::vecto
     file.close();
     std::remove(tempFile.c_str()); // Clean up temp file
     
-    std::cout << "✅ Downloaded vector tile: " << mvtData.size() << " bytes" << std::endl;
+    std::cout << "Downloaded vector tile: " << mvtData.size() << " bytes" << std::endl;
     
     // Parse the real MVT data
-    std::cout << "🔍 Parsing vector tile data..." << std::endl;
+    std::cout << "Parsing vector tile data..." << std::endl;
     parseVectorTileStreets(mvtData, tile, roads);
-    std::cout << "✅ Vector tile parsing completed" << std::endl;
+    std::cout << "Vector tile parsing completed" << std::endl;
 }
 
 void SimpleMapSnapshotter::parseVectorTileStreets(const std::vector<uint8_t>& mvtData,
@@ -1125,7 +1120,7 @@ void SimpleMapSnapshotter::parseVectorTileStreets(const std::vector<uint8_t>& mv
 {
     roads.clear();
     if (mvtData.empty()) {
-        std::cout << "❌ Empty vector tile data\n";
+        std::cout << "Empty vector tile data\n";
         return;
     }
 
@@ -1135,7 +1130,7 @@ void SimpleMapSnapshotter::parseVectorTileStreets(const std::vector<uint8_t>& mv
         const double latDeg   = tileCenterLatDeg(tile.y, tile.z);
         const double mPerTile = metersPerTile(latDeg, tile.z);
         if (mPerTile <= 0.0) {
-            std::cout << "⚠️ Invalid meters_per_tile_; aborting road parse.\n";
+            std::cout << "Invalid meters_per_tile_; aborting road parse.\n";
             return;
         }
     }
@@ -1167,7 +1162,7 @@ void SimpleMapSnapshotter::parseVectorTileStreets(const std::vector<uint8_t>& mv
             buf = mvtData;
         }
     } catch (const std::exception& e) {
-        std::cout << "❌ Gzip inflate error: " << e.what() << "\n";
+        std::cout << "Gzip inflate error: " << e.what() << "\n";
         return;
     }
 
@@ -1447,7 +1442,7 @@ void SimpleMapSnapshotter::parseVectorTileStreets(const std::vector<uint8_t>& mv
                         roads.push_back(std::move(r));
                     }
                 } catch (const std::exception& fe) {
-                    std::cout << "⚠️ Road feature error: " << fe.what() << "\n";
+                    std::cout << "Road feature error: " << fe.what() << "\n";
                     continue;
                 }
             }
@@ -1455,12 +1450,12 @@ void SimpleMapSnapshotter::parseVectorTileStreets(const std::vector<uint8_t>& mv
 
         const size_t added = roads.size() - added_before;
         if (added == 0) {
-            std::cout << "⚠️ No road features found in vector tile\n";
+            std::cout << "No road features found in vector tile\n";
         } else {
-            std::cout << "✅ Extracted " << added << " road features (kerb-to-kerb widths)\n";
+            std::cout << "Extracted " << added << " road features (kerb-to-kerb widths)\n";
         }
     } catch (const std::exception& e) {
-        std::cout << "❌ Error parsing vector tile: " << e.what() << "\n";
+        std::cout << "Error parsing vector tile: " << e.what() << "\n";
     }
 }
 
@@ -1568,7 +1563,7 @@ void SimpleMapSnapshotter::createExtrudedPolygon(
 
 
 void SimpleMapSnapshotter::createRoadMesh(const std::vector<glm::vec2>& centerline,
-                    float width, float zOffset,       // <-- NEW param
+                    float width, float zOffset,
                     const glm::vec4& color, const glm::vec3& offset,
                     std::vector<MapVertex>& vertices,
                     std::vector<uint32_t>& indices) 
@@ -1729,12 +1724,12 @@ void SimpleMapSnapshotter::createTerrainQuad(int x, int y, int resolution, const
 // =============================================================
 
 void SimpleMapSnapshotter::updateTileGeometry() {
-    std::cout << "🔄 Updating tile geometry for current view..." << std::endl;
+    std::cout << "Updating tile geometry for current view..." << std::endl;
     
     // Get visible tiles for current view
     auto visible_tiles = getVisibleTilesForCurrentView();
     
-    std::cout << "   Found " << visible_tiles.size() << " visible tiles" << std::endl;
+    std::cout << "Found " << visible_tiles.size() << " visible tiles" << std::endl;
     
     // Store tile bounds for positioning calculations (to avoid recursive calls)
     if (!visible_tiles.empty()) {
@@ -1755,7 +1750,7 @@ void SimpleMapSnapshotter::updateTileGeometry() {
         current_tile_bounds_max_y_ = max_y;
         tile_bounds_valid_ = true;
         
-        std::cout << "📍 Tile bounds: X(" << min_x << "-" << max_x 
+        std::cout << "Tile bounds: X(" << min_x << "-" << max_x 
                   << ") Y(" << min_y << "-" << max_y << ")" << std::endl;
     }
     
@@ -1809,11 +1804,11 @@ void SimpleMapSnapshotter::loadTileGeometry(const TileID& tile) {
     // Check if geometry already exists
     if (tile_geometry_.find(tile_key) != tile_geometry_.end() && 
         tile_geometry_[tile_key].uploaded) {
-        std::cout << "   📦 Tile geometry already loaded: " << tile_key << std::endl;
+        std::cout << "Tile geometry already loaded: " << tile_key << std::endl;
         return;
     }
     
-    std::cout << "🔺 Loading geometry for tile: " << tile_key << std::endl;
+    std::cout << "Loading geometry for tile: " << tile_key << std::endl;
     
     // Generate the 3D geometry for this tile
     auto geometry_buffer = generateTileGeometry(tile);
@@ -1822,16 +1817,16 @@ void SimpleMapSnapshotter::loadTileGeometry(const TileID& tile) {
         // Store in our tile geometry map
         tile_geometry_[tile_key] = std::move(geometry_buffer);
         
-        std::cout << "✅ Generated geometry for tile " << tile_key 
+        std::cout << "Generated geometry for tile " << tile_key 
                   << ": " << tile_geometry_[tile_key].vertices.size() << " vertices, "
                   << tile_geometry_[tile_key].indices.size() << " indices" << std::endl;
     } else {
-        std::cout << "⚠️ No geometry generated for tile " << tile_key << std::endl;
+        std::cout << "No geometry generated for tile " << tile_key << std::endl;
     }
 }
 
 void SimpleMapSnapshotter::processPendingTileGeometry() {
-    std::cout << "📤 Processing pending tile geometry uploads..." << std::endl;
+    std::cout << "Processing pending tile geometry uploads..." << std::endl;
     
     int uploaded_count = 0;
     
@@ -1844,7 +1839,7 @@ void SimpleMapSnapshotter::processPendingTileGeometry() {
         }
     }
     
-    std::cout << "✅ Uploaded " << uploaded_count << " tile geometries to GPU" << std::endl;
+    std::cout << "Uploaded " << uploaded_count << " tile geometries to GPU" << std::endl;
 }
 
 // =============================================================
@@ -1854,7 +1849,7 @@ void SimpleMapSnapshotter::processPendingTileGeometry() {
 void SimpleMapSnapshotter::initializeShaders() {
     if (shaders_initialized_) return;
     
-    std::cout << "🔧 Initializing map rendering shaders..." << std::endl;
+    std::cout << "Initializing map rendering shaders..." << std::endl;
     
     // Vertex shader source - simple textured quad
     const char* vertexShaderSource = R"(
@@ -1906,7 +1901,7 @@ void SimpleMapSnapshotter::initializeShaders() {
     if (!success) {
         char infoLog[512];
         glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
-        std::cerr << "❌ Vertex shader compilation failed: " << infoLog << std::endl;
+        std::cerr << "Vertex shader compilation failed: " << infoLog << std::endl;
         return;
     }
     
@@ -1920,7 +1915,7 @@ void SimpleMapSnapshotter::initializeShaders() {
     if (!success) {
         char infoLog[512];
         glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
-        std::cerr << "❌ Fragment shader compilation failed: " << infoLog << std::endl;
+        std::cerr << "Fragment shader compilation failed: " << infoLog << std::endl;
         return;
     }
     
@@ -1935,7 +1930,7 @@ void SimpleMapSnapshotter::initializeShaders() {
     if (!success) {
         char infoLog[512];
         glGetProgramInfoLog(map_shader_program_, 512, NULL, infoLog);
-        std::cerr << "❌ Shader program linking failed: " << infoLog << std::endl;
+        std::cerr << "Shader program linking failed: " << infoLog << std::endl;
         return;
     }
     
@@ -1949,12 +1944,12 @@ void SimpleMapSnapshotter::initializeShaders() {
     u_texture_ = glGetUniformLocation(map_shader_program_, "u_texture");
     u_alpha_ = glGetUniformLocation(map_shader_program_, "u_alpha");
     
-    std::cout << "✅ Map shaders initialized successfully" << std::endl;
+    std::cout << "Map shaders initialized successfully" << std::endl;
     shaders_initialized_ = true;
 }
 
 void SimpleMapSnapshotter::initializeGeometry() {
-    std::cout << "🔧 Initializing map geometry..." << std::endl;
+    std::cout << "Initializing map geometry..." << std::endl;
     
     // Create a horizontal quad using standard OpenGL coordinates: Z=up, X=forward, Y=left
     // Calculate the world bounds to match the visible tile area perfectly
@@ -2002,13 +1997,13 @@ void SimpleMapSnapshotter::initializeGeometry() {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
     
-    std::cout << "✅ Map geometry initialized successfully" << std::endl;
+    std::cout << "Map geometry initialized successfully" << std::endl;
 }
 
 void SimpleMapSnapshotter::initializeGeometryShaders() {
     if (geometry_shaders_initialized_) return;
     
-    std::cout << "🔧 Initializing 3D geometry shaders..." << std::endl;
+    std::cout << "Initializing 3D geometry shaders..." << std::endl;
     
     // 3D Vertex shader for MapVertex structure
     const char* geometryVertexShaderSource = R"(
@@ -2097,7 +2092,7 @@ void SimpleMapSnapshotter::initializeGeometryShaders() {
     if (!success) {
         char infoLog[512];
         glGetShaderInfoLog(geometryVertexShader, 512, NULL, infoLog);
-        std::cerr << "❌ Geometry vertex shader compilation failed: " << infoLog << std::endl;
+        std::cerr << "Geometry vertex shader compilation failed: " << infoLog << std::endl;
         return;
     }
     
@@ -2110,7 +2105,7 @@ void SimpleMapSnapshotter::initializeGeometryShaders() {
     if (!success) {
         char infoLog[512];
         glGetShaderInfoLog(geometryFragmentShader, 512, NULL, infoLog);
-        std::cerr << "❌ Geometry fragment shader compilation failed: " << infoLog << std::endl;
+        std::cerr << "Geometry fragment shader compilation failed: " << infoLog << std::endl;
         return;
     }
     
@@ -2124,7 +2119,7 @@ void SimpleMapSnapshotter::initializeGeometryShaders() {
     if (!success) {
         char infoLog[512];
         glGetProgramInfoLog(geometry_shader_program_, 512, NULL, infoLog);
-        std::cerr << "❌ Geometry shader program linking failed: " << infoLog << std::endl;
+        std::cerr << "Geometry shader program linking failed: " << infoLog << std::endl;
         return;
     }
     
@@ -2140,7 +2135,7 @@ void SimpleMapSnapshotter::initializeGeometryShaders() {
     u_light_color_ = glGetUniformLocation(geometry_shader_program_, "u_light_color");
     u_ambient_color_ = glGetUniformLocation(geometry_shader_program_, "u_ambient_color");
     
-    std::cout << "✅ 3D geometry shaders initialized successfully" << std::endl;
+    std::cout << "3D geometry shaders initialized successfully" << std::endl;
     geometry_shaders_initialized_ = true;
 }
 
@@ -2185,14 +2180,9 @@ void SimpleMapSnapshotter::renderTileGeometry(const glm::mat4& projection, const
 
             TileID tile{z, x, y};
 
-            // EXACT integer multiples of TILE_SIZE_WS
             const glm::vec3 tile_world = getTileWorldPosition(tile);
             model = glm::translate(glm::mat4(1.0f), tile_world);
 
-            // if (rendered_count < 3) {
-            //     std::cout << "🔍 Tile " << tile_key << " model translate: ("
-            //               << tile_world.x << ", " << tile_world.y << ", " << tile_world.z << ")\n";
-            // }
         }
 
         glUniformMatrix4fv(u_geo_model_, 1, GL_FALSE, glm::value_ptr(model));
@@ -2211,14 +2201,12 @@ void SimpleMapSnapshotter::renderTileGeometry(const glm::mat4& projection, const
 
     glUseProgram(0);
     glDisable(GL_DEPTH_TEST);
-
-    // std::cout << "✅ Rendered " << rendered_count << " tile geometries\n";
 }
 
 
 
 void SimpleMapSnapshotter::uploadImageToTexture(const std::vector<uint8_t>& imageData, int width, int height) {
-    std::cout << "🖼️ Uploading image to GPU texture..." << std::endl;
+    std::cout << "Uploading image to GPU texture..." << std::endl;
     std::cout << "   Image size: " << width << "x" << height << std::endl;
     std::cout << "   Data size: " << imageData.size() << " bytes" << std::endl;
     
@@ -2234,7 +2222,7 @@ void SimpleMapSnapshotter::uploadImageToTexture(const std::vector<uint8_t>& imag
     );
     
     if (!pixels) {
-        std::cerr << "❌ Failed to decode image data" << std::endl;
+        std::cerr << "Failed to decode image data" << std::endl;
         return;
     }
     
@@ -2277,7 +2265,7 @@ void SimpleMapSnapshotter::uploadImageToTexture(const std::vector<uint8_t>& imag
     stbi_image_free(pixels);
     glBindTexture(GL_TEXTURE_2D, 0);
     
-    std::cout << "✅ Texture uploaded successfully (ID: " << map_texture_id_ << ")" << std::endl;
+    std::cout << "Texture uploaded successfully (ID: " << map_texture_id_ << ")" << std::endl;
 }
 
 void SimpleMapSnapshotter::updateTexture() {
@@ -2288,10 +2276,8 @@ void SimpleMapSnapshotter::updateTexture() {
         map_texture_ready_ = true;
         has_pending_texture_ = false;
         pending_image_data_.clear(); // Free memory
-        std::cout << "✅ Texture upload completed on main thread" << std::endl;
-        
-        // When texture is ready, also update tile geometry
-        std::cout << "🏗️ Triggering tile geometry update..." << std::endl;
+        std::cout << "Texture upload completed on main thread" << std::endl;
+
         updateTileGeometry();
     }
 }
@@ -2300,18 +2286,14 @@ void SimpleMapSnapshotter::renderMap(const glm::mat4& projection, const glm::mat
     if (render_3d_mode_) {
         // Render 3D tile geometry
         if (!tile_geometry_.empty()) {
-            // std::cout << "🏗️ Rendering 3D tile geometry..." << std::endl;
             renderTileGeometry(projection, view);
         } else {
-            std::cout << "⚠️ No 3D geometry loaded yet, falling back to 2D" << std::endl;
+            std::cout << "No 3D geometry loaded yet, falling back to 2D" << std::endl;
             render_3d_mode_ = false; // Temporarily switch to 2D
         }
     }
-    
     // Always render 2D texture as background (for now)
     if (hasValidTexture()) {
-        // std::cout << "🗺️ Rendering 2D map texture as background..." << std::endl;
-        
         
         if (map_shader_program_ == 0 || map_vao_ == 0) {
             return; // Failed to initialize
@@ -2354,7 +2336,7 @@ void SimpleMapSnapshotter::renderMap(const glm::mat4& projection, const glm::mat
 }
 
 // =============================================================
-// ✅ NEW: Real building data from Mapbox vector tiles
+// Real building data from Mapbox vector tiles
 // =============================================================
 void SimpleMapSnapshotter::fetchVectorTileBuildings(const TileID& tile, std::vector<BuildingGeometry>& buildings) {
     // Fetch real building data from Mapbox vector tiles
@@ -2367,7 +2349,7 @@ void SimpleMapSnapshotter::fetchVectorTileBuildings(const TileID& tile, std::vec
                      std::to_string((int)tile.z) + "/" + std::to_string(tile.x) + "/" + std::to_string(tile.y) + 
                      ".mvt?access_token=" + accessToken_;
     
-    std::cout << "🏢 Fetching building data from: " << url << std::endl;
+    std::cout << "Fetching building data from: " << url << std::endl;
     
     // Use the same safe download method as streets
     std::string tempFile = "/tmp/buildings_" + std::to_string(tile.z) + "_" + 
@@ -2377,14 +2359,14 @@ void SimpleMapSnapshotter::fetchVectorTileBuildings(const TileID& tile, std::vec
     int result = std::system(command.c_str());
     
     if (result != 0) {
-        std::cout << "❌ Failed to download building tile data" << std::endl;
+        std::cout << "Failed to download building tile data" << std::endl;
         return;
     }
     
     // Read the downloaded file
     std::ifstream file(tempFile, std::ios::binary);
     if (!file.is_open()) {
-        std::cout << "❌ Failed to open building tile file" << std::endl;
+        std::cout << "Failed to open building tile file" << std::endl;
         return;
     }
     
@@ -2395,14 +2377,14 @@ void SimpleMapSnapshotter::fetchVectorTileBuildings(const TileID& tile, std::vec
     std::remove(tempFile.c_str());
     
     if (mvtData.empty()) {
-        std::cout << "❌ Empty building tile data" << std::endl;
+        std::cout << "Empty building tile data" << std::endl;
         return;
     }
     
     // Parse the building data from the vector tile
     parseVectorTileBuildings(mvtData, tile, buildings);
     
-    std::cout << "✅ Fetched " << buildings.size() << " real buildings from Mapbox" << std::endl;
+    std::cout << "Fetched " << buildings.size() << " real buildings from Mapbox" << std::endl;
 }
 
 void SimpleMapSnapshotter::fetchVectorTileGreenAreas(const TileID& tile, std::vector<GreenAreaGeometry>& greenAreas) {
@@ -2416,7 +2398,7 @@ void SimpleMapSnapshotter::fetchVectorTileGreenAreas(const TileID& tile, std::ve
                      std::to_string((int)tile.z) + "/" + std::to_string(tile.x) + "/" + std::to_string(tile.y) + 
                      ".mvt?access_token=" + accessToken_;
     
-    std::cout << "🌳 Fetching green area data from: " << url << std::endl;
+    std::cout << "Fetching green area data from: " << url << std::endl;
     
     // Use the same safe download method as buildings and streets
     std::string tempFile = "/tmp/green_areas_" + std::to_string(tile.z) + "_" + 
@@ -2426,14 +2408,14 @@ void SimpleMapSnapshotter::fetchVectorTileGreenAreas(const TileID& tile, std::ve
     int result = std::system(command.c_str());
     
     if (result != 0) {
-        std::cout << "❌ Failed to download green area tile data" << std::endl;
+        std::cout << "Failed to download green area tile data" << std::endl;
         return;
     }
     
     // Read the downloaded file
     std::ifstream file(tempFile, std::ios::binary);
     if (!file.is_open()) {
-        std::cout << "❌ Failed to open green area tile file" << std::endl;
+        std::cout << "Failed to open green area tile file" << std::endl;
         return;
     }
     
@@ -2444,14 +2426,14 @@ void SimpleMapSnapshotter::fetchVectorTileGreenAreas(const TileID& tile, std::ve
     std::remove(tempFile.c_str());
     
     if (mvtData.empty()) {
-        std::cout << "❌ Empty green area tile data" << std::endl;
+        std::cout << "Empty green area tile data" << std::endl;
         return;
     }
     
     // Parse the green area data from the vector tile
     parseVectorTileGreenAreas(mvtData, tile, greenAreas);
     
-    std::cout << "✅ Fetched " << greenAreas.size() << " real green areas from Mapbox" << std::endl;
+    std::cout << "Fetched " << greenAreas.size() << " real green areas from Mapbox" << std::endl;
 }
 
 void SimpleMapSnapshotter::parseVectorTileBuildings(
@@ -2460,7 +2442,7 @@ void SimpleMapSnapshotter::parseVectorTileBuildings(
     std::vector<BuildingGeometry>& buildings)
 {
     buildings.clear();
-    if (mvtData.empty()) { std::cout << "❌ Empty building vector tile data\n"; return; }
+    if (mvtData.empty()) { std::cout << "Empty building vector tile data\n"; return; }
 
     auto snap01f = [](float v, float eps = 1e-5f) {
         if (std::abs(v) < eps) return 0.0f;
@@ -2559,21 +2541,21 @@ void SimpleMapSnapshotter::parseVectorTileBuildings(
                             }
                         }
                     } catch (const std::exception& fe) {
-                        std::cout << "⚠️ Building feature error: " << fe.what() << "\n";
+                        std::cout << "Building feature error: " << fe.what() << "\n";
                     }
                 }
 
                 if (foundAny) return;
 
             } catch (const std::exception& le) {
-                std::cout << "⚠️ Error processing building layer: " << le.what() << "\n";
+                std::cout << "Error processing building layer: " << le.what() << "\n";
             }
         }
 
-        if (!foundAny) std::cout << "⚠️ No building features found\n";
+        if (!foundAny) std::cout << "No building features found\n";
 
     } catch (const std::exception& e) {
-        std::cout << "❌ Error parsing building tile data: " << e.what() << "\n";
+        std::cout << "Error parsing building tile data: " << e.what() << "\n";
         buildings.clear();
     }
 }
@@ -2585,7 +2567,7 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
     greenAreas.clear();
 
     if (mvtData.empty()) {
-        std::cout << "❌ Empty green area vector tile data" << std::endl;
+        std::cout << "Empty green area vector tile data" << std::endl;
         return;
     }
 
@@ -2595,7 +2577,7 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
         return v;
     };
 
-    std::cout << "🔍 Parsing green area data from vector tile (" << mvtData.size() << " bytes)" << std::endl;
+    std::cout << "Parsing green area data from vector tile (" << mvtData.size() << " bytes)" << std::endl;
 
     try {
         // --- decompress (if gzip) ---
@@ -2630,10 +2612,10 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
 
             inflateEnd(&stream);
             decompressedData.swap(out);
-            std::cout << "✅ Decompressed " << mvtData.size()
+            std::cout << "Decompressed " << mvtData.size()
                       << " bytes to " << decompressedData.size() << " bytes" << std::endl;
         } else {
-            std::cout << "📦 Data is not gzip compressed, using as-is" << std::endl;
+            std::cout << "Data is not gzip compressed, using as-is" << std::endl;
             decompressedData = mvtData;
         }
 
@@ -2641,7 +2623,7 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
         std::string blob(reinterpret_cast<const char*>(decompressedData.data()), decompressedData.size());
         mapbox::vector_tile::buffer vt(blob);
         auto layers = vt.getLayers();
-        std::cout << "📋 Found " << layers.size() << " layers in vector tile" << std::endl;
+        std::cout << "Found " << layers.size() << " layers in vector tile" << std::endl;
 
         bool foundAny = false;
 
@@ -2669,7 +2651,7 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
                 const float extent    = static_cast<float>(layer.getExtent());
                 const float invExtent = extent > 0.0f ? 1.0f / extent : 1.0f;
 
-                std::cout << "🌳 Green area layer \"" << layerName << "\": " << layer.featureCount() 
+                std::cout << "Green area layer \"" << layerName << "\": " << layer.featureCount() 
                           << " features, extent=" << extent << std::endl;
 
                 for (std::size_t i = 0; i < layer.featureCount(); ++i) {
@@ -2698,7 +2680,7 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
                         std::string areaClass = getStringProp("class");
                         std::string areaType = getStringProp("type");
 
-                        glm::vec4 color = hexToRGBA("#e0e0e0", 1.0f);
+                        glm::vec4 color = hexToRGBA("#606C38", 1.0f);
                         // Filter for parks and green areas only
                         bool isPark = false;
                         
@@ -2706,20 +2688,20 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
                             isPark = true;
                             // Different colors for different park types
                             if (areaType == "park") {
-                                color = hexToRGBA("#e0e0e0", 1.0f); // Standard park green
+                                color = hexToRGBA("#606C38", 1.0f); // Standard park green
                             } else if (areaType == "recreation_ground") {
-                                color = hexToRGBA("#e0e0e0", 1.0f); // Recreation ground
+                                color = hexToRGBA("#606C38", 1.0f); // Recreation ground
                             } else if (areaType == "playground") {
-                                color = hexToRGBA("#e0e0e0", 1.0f); // Playground
+                                color = hexToRGBA("#606C38", 1.0f); // Playground
                             } else {
-                                color = hexToRGBA("#e0e0e0", 1.0f); // Default park green
+                                color = hexToRGBA("#606C38", 1.0f); // Default park green
                             }
                         } else if (areaClass == "scrub") {
                             isPark = true;
-                            color = hexToRGBA("#e0e0e0", 1.0f); // Scrub/natural area
+                            color = hexToRGBA("#606C38", 1.0f); // Scrub/natural area
                         } else if (areaClass == "pitch") {
                             isPark = true;
-                            color = hexToRGBA("#e0e0e0", 1.0f); // Sports field green
+                            color = hexToRGBA("#606C38", 1.0f); // Sports field green
                         }
                         
                         // Skip non-park features
@@ -2729,6 +2711,7 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
                         
                         greenArea.type = areaType;
                         greenArea.color = color;
+                        greenArea.height = -0.5f;
 
                         // --- geometry: outer ring only (holes ignored here) ---
                         auto geom = feature.getGeometries<mapbox::vector_tile::points_arrays_type>(1.0f);
@@ -2751,26 +2734,26 @@ void SimpleMapSnapshotter::parseVectorTileGreenAreas(const std::vector<uint8_t>&
                             }
                         }
                     } catch (const std::exception& fe) {
-                        std::cout << "⚠️ Error parsing green area feature " << i << ": " << fe.what() << std::endl;
+                        std::cout << "Error parsing green area feature " << i << ": " << fe.what() << std::endl;
                         continue;
                     }
                 }
 
-                std::cout << "✅ Parsed " << greenAreas.size() << " green areas from layer \"" << layerName << "\"" << std::endl;
+                std::cout << "Parsed " << greenAreas.size() << " green areas from layer \"" << layerName << "\"" << std::endl;
                 if (foundAny) return; // Found green areas, we're done
 
             } catch (const std::exception& le) {
-                std::cout << "⚠️ Error processing green area layer " << layerName << ": " << le.what() << std::endl;
+                std::cout << "Error processing green area layer " << layerName << ": " << le.what() << std::endl;
                 continue;
             }
         }
 
         if (!foundAny) {
-            std::cout << "⚠️ No green area features found in vector tile" << std::endl;
+            std::cout << "No green area features found in vector tile" << std::endl;
         }
 
     } catch (const std::exception& e) {
-        std::cout << "❌ Error parsing green area tile data: " << e.what() << std::endl;
+        std::cout << "Error parsing green area tile data: " << e.what() << std::endl;
         greenAreas.clear();
     }
 }
@@ -2790,7 +2773,7 @@ float SimpleMapSnapshotter::calculatePolygonArea(const std::vector<glm::vec2>& p
 
 
 void SimpleMapSnapshotter::cleanup() {
-    std::cout << "🧹 Cleaning up map rendering resources..." << std::endl;
+    std::cout << "Cleaning up map rendering resources..." << std::endl;
     
     if (map_texture_id_ != 0) {
         glDeleteTextures(1, &map_texture_id_);
@@ -2845,7 +2828,7 @@ void SimpleMapSnapshotter::cleanup() {
     if (circle_wall_vbo_) { glDeleteBuffers(1,&circle_wall_vbo_); circle_wall_vbo_=0; }
     if (circle_wall_vao_) { glDeleteVertexArrays(1,&circle_wall_vao_); circle_wall_vao_=0; }
     
-    std::cout << "✅ Cleanup completed" << std::endl;
+    std::cout << "Cleanup completed" << std::endl;
 }
 
 // Helper function to convert hex color to RGBA (0-1 range)
@@ -2936,7 +2919,7 @@ void SimpleMapSnapshotter::initializeCircleShader() {
         GLint ok = GL_FALSE; glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
         if (!ok) {
             char log[1024]; glGetShaderInfoLog(sh, 1024, nullptr, log);
-            std::cerr << "❌ Circle shader compile error: " << log << std::endl;
+            std::cerr << "Circle shader compile error: " << log << std::endl;
             glDeleteShader(sh);
             return 0;
         }
@@ -2955,7 +2938,7 @@ void SimpleMapSnapshotter::initializeCircleShader() {
     glGetProgramiv(circle_shader_program_, GL_LINK_STATUS, &linked);
     if (!linked) {
         char log[1024]; glGetProgramInfoLog(circle_shader_program_, 1024, nullptr, log);
-        std::cerr << "❌ Circle program link error: " << log << std::endl;
+        std::cerr << "Circle program link error: " << log << std::endl;
         glDeleteProgram(circle_shader_program_);
         circle_shader_program_ = 0;
     }
@@ -2992,7 +2975,7 @@ void SimpleMapSnapshotter::initializeCircleShader() {
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
 
-    std::cout << "✅ Circle shader initialized" << std::endl;
+    std::cout << "Circle shader initialized" << std::endl;
 }
 
 
@@ -3087,7 +3070,7 @@ void SimpleMapSnapshotter::initializeCircleWalls(int segments) {
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
 
-    std::cout << "✅ Circle walls initialized (" << segments << " segments)\n";
+    std::cout << "Circle walls initialized (" << segments << " segments)\n";
 }
 
 
