@@ -445,8 +445,8 @@ public:
         }
         std::cout << green << "Successfully initialized Cloud shader" << reset << std::endl;
 
-        float cloud_height    = 0.0f;
-        float cloud_thickness = 45.0f;
+        float cloud_height    = 300.0f;
+        float cloud_thickness = 30.0f;
         float cloud_coverage  = 0.65f;
         float cloud_absorp    = 1.03f;
         float wind_x = 5.0f, wind_z = 3.0f, max_d = 10000.0f;
@@ -456,7 +456,8 @@ public:
         cloud_absorp,   wind_x,       wind_z,          max_d);
 
         // vertical axis is Z now → {halfX, halfY, halfZ}
-        cloud_renderer_.createVolumeBox({200.f, 200.f, 120.f});  // 400×400×240 m box
+        cloud_renderer_.createVolumeBox({2000.f, 2000.f, 50.f});  // 400×400×240 m box
+        cloud_renderer_.setVolumeHalfExtents({2000.f, 2000.f, 50.f});
 
         Eigen::Matrix4f M = Eigen::Matrix4f::Identity();
         M.block<3,1>(0,3) = Eigen::Vector3f(
@@ -563,6 +564,14 @@ public:
         ImGui::Text("Point Cloud Settings:");
         ImGui::SliderFloat("ROS2 Topic Point Size", &ros2_topic_point_size_, 0.0f, 50.0f, "%.1f");
         ImGui::SliderFloat("PCD File Point Size", &pcd_file_point_size_, 0.0f, 50.0f, "%.1f");
+        
+        // ============================================
+        // Rendering Distance Control
+        // ============================================
+        ImGui::Separator();
+        ImGui::Text("Rendering Distance:");
+        ImGui::SliderFloat("Far Clipping Plane", &far_clipping_distance_, 100.0f, 50000.0f, "%.0f");
+        ImGui::Text("Objects beyond %.0f units will not be rendered", far_clipping_distance_);
 
         // ============================================
         // Split-screen mode control
@@ -1482,18 +1491,6 @@ public:
             
             shader.use();
 
-            {
-                Eigen::Matrix4f view_inv = view.inverse();
-                Eigen::Vector3f camera_position = view_inv.block<3,1>(0,3);
-
-                auto now  = std::chrono::steady_clock::now();
-                float t   = std::chrono::duration<float>(now - blink_start_).count();
-                cloud_renderer_.updateTime(t);
-
-                cloud_renderer_.renderCloudVolume(
-                    view, projection, camera_position,
-                    /*halfExtents*/ {200.f, 120.f, 200.f});
-            }
         }
 
         // ============================================
@@ -1626,7 +1623,7 @@ public:
 
         // 2) Compute Projection matrix
         float fovY = 45.f * M_PI / 180.f;
-        float zNear = 0.01f, zFar = 1000.f;
+        float zNear = 0.01f, zFar = far_clipping_distance_; // Use dynamic far clipping distance
         float f = 1.f / std::tan(fovY / 2.f);
 
         if (split_screen_mode_)
@@ -1696,6 +1693,19 @@ public:
 
             // Clear depth buffer between viewports to prevent cross-contamination
             glClear(GL_DEPTH_BUFFER_BIT);
+
+            // Render cloud volume for left viewport (map view)
+            {
+                Eigen::Matrix4f view_inv = left_view.inverse();
+                Eigen::Vector3f camera_position = view_inv.block<3,1>(0,3);
+
+                auto now  = std::chrono::steady_clock::now();
+                float t   = std::chrono::duration<float>(now - blink_start_).count();
+                cloud_renderer_.updateTime(t);
+
+                cloud_renderer_.renderCloudVolume(left_view, proj_left, camera_position);
+
+            }
 
             // ============================================
             // RIGHT VIEWPORT: PCD, meshes, lanelet, grid, frames
@@ -1787,7 +1797,6 @@ public:
         if (!split_screen_mode_)
             return;
 
-        ImGuiIO &io = ImGui::GetIO();
         auto fb_size = framebuffer_size();
         float w = float(fb_size.x());
         float h = float(fb_size.y());
@@ -2315,7 +2324,7 @@ public:
                             .keep_last(1)           // Only keep 1 message
                             .best_effort()          // Use best effort delivery
                             .durability_volatile(), // Don't persist messages
-                        [this, name](std::shared_ptr<rclcpp::SerializedMessage> msg)
+                        [this, name](std::shared_ptr<rclcpp::SerializedMessage> /* msg */)
                         {
                             std::lock_guard<std::mutex> lk(topics_mutex_);
                             auto now = std::chrono::steady_clock::now();
@@ -2872,6 +2881,9 @@ private:
     // Point size controls (RViz-style: 0-50 range)
     float ros2_topic_point_size_ = 100.0f; // Default 10 (medium size)
     float pcd_file_point_size_ = 5.0f;     // Default 5 (small size)
+    
+    // Rendering distance control
+    float far_clipping_distance_ = 2000.0f; // Default far clipping plane distance
 };
 
 int main(int argc, char **argv)

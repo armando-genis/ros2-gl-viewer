@@ -21,7 +21,7 @@ bool CloudRenderer::initCloudRendering() {
     glGenBuffers(1, &cloud_ebo_);
     
     // Load or create Perlin noise texture
-    if (!loadPerlinTexture("perlin256.png")) {
+    if (!loadPerlinTexture("perlin257.png")) {
         std::cout << "Failed to load Perlin texture, creating default..." << std::endl;
         perlin_texture_ = createDefaultPerlinTexture();
     }
@@ -464,8 +464,7 @@ GLuint CloudRenderer::compileShaderProgram(const char* vertex_source, const char
 
 void CloudRenderer::renderCloudVolume(const Eigen::Matrix4f& view,
                                       const Eigen::Matrix4f& projection,
-                                      const Eigen::Vector3f& cameraPosition,
-                                      const Eigen::Vector3f& halfExtents) {
+                                      const Eigen::Vector3f& cameraPosition) {
     if (!vol_vao_ || cloud_shader_program_ == 0) return;
 
     // Save state
@@ -485,7 +484,7 @@ void CloudRenderer::renderCloudVolume(const Eigen::Matrix4f& view,
     glUniformMatrix4fv(glGetUniformLocation(prog,"view"),  1, GL_FALSE, view.data());
     glUniformMatrix4fv(glGetUniformLocation(prog,"projection"), 1, GL_FALSE, projection.data());
     glUniform3fv(glGetUniformLocation(prog,"cameraPosition"), 1, cameraPosition.data());
-    glUniform3fv(glGetUniformLocation(prog,"uHalfExtents"), 1, halfExtents.data());
+    glUniform3fv(glGetUniformLocation(prog,"uHalfExtents"), 1, half_extents_.data());
 
     // cloud params (same as in your sky code)
     glUniform1f(glGetUniformLocation(prog,"uTime"), uniforms_.uTime);
@@ -508,9 +507,9 @@ void CloudRenderer::renderCloudVolume(const Eigen::Matrix4f& view,
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glDepthMask(GL_FALSE);        // don’t write depth, just test it
+    glDepthMask(GL_FALSE);
 
-    glDisable(GL_CULL_FACE);      // robust for front faces of box
+    glDisable(GL_CULL_FACE);
 
     glBindVertexArray(vol_vao_);
     glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, nullptr);
@@ -528,7 +527,7 @@ void CloudRenderer::renderCloudVolume(const Eigen::Matrix4f& view,
 void CloudRenderer::createVolumeBox(const Eigen::Vector3f& halfExtents) {
     volume_half_extents_ = halfExtents;
 
-    // 24 unique verts (4 per face) so we can have correct face interpolation
+    // 24 unique verts (4 per face) so it can have correct face interpolation
     struct V { float x,y,z; };
     const float hx = halfExtents.x(), hy = halfExtents.y(), hz = halfExtents.z();
 

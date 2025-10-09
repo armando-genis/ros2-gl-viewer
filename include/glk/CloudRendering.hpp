@@ -55,7 +55,7 @@ public:
 
     // Render the cloud volume
     void renderCloudVolume(const Eigen::Matrix4f& view, const Eigen::Matrix4f& projection, 
-                          const Eigen::Vector3f& cameraPosition, const Eigen::Vector3f& halfExtents);
+                          const Eigen::Vector3f& cameraPosition);
 
     // add to class CloudRenderer
     GLuint vol_vao_ = 0, vol_vbo_ = 0, vol_ebo_ = 0;
@@ -64,6 +64,9 @@ public:
 
     void createVolumeBox(const Eigen::Vector3f& halfExtents);
     void setVolumeModelMatrix(const Eigen::Matrix4f& M) { volume_model_ = M; }
+
+    Eigen::Vector3f half_extents_ = {200.f,120.f,200.f};
+    void setVolumeHalfExtents(const Eigen::Vector3f& he){ half_extents_ = he; }
 
 private:
     // OpenGL resources

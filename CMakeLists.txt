@@ -323,6 +323,15 @@ add_custom_command(TARGET pointcloud_viewer POST_BUILD
   COMMENT "Copying perlin256.png to build directory"
 )
 
+# Copy the Perlin noise texture for cloud rendering
+add_custom_command(TARGET pointcloud_viewer POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+  ${CMAKE_SOURCE_DIR}/src/perlin257.png
+  ${CMAKE_BINARY_DIR}/perlin257.png
+  COMMENT "Copying perlin257.png to build directory"
+)
+
+
 # Install the executable
 install(TARGETS pointcloud_viewer
   RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
