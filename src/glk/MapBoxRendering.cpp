@@ -1394,8 +1394,8 @@ void SimpleMapSnapshotter::parseVectorTileStreets(const std::vector<uint8_t>& mv
                     // Convert meters → tile fraction expected by createRoadMesh
                     const float width_tile = width_m / meters_per_tile_;
 
-                    glm::vec4 concrete_color = hexToRGBA("#404040", 0.1f);
-                    glm::vec4 asphalt_color = hexToRGBA("#404040", 0.1f);
+                    glm::vec4 concrete_color = hexToRGBA("#E9EDC9", 0.1f);
+                    glm::vec4 asphalt_color = hexToRGBA("#E9EDC9", 0.1f);
 
                     auto classColor = [&](const std::string& c)->glm::vec4 {
                         if (c=="motorway"||c=="trunk"||c=="primary"||c=="secondary")

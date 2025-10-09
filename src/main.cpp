@@ -449,7 +449,7 @@ public:
         float cloud_thickness = 30.0f;
         float cloud_coverage  = 0.65f;
         float cloud_absorp    = 1.03f;
-        float wind_x = 5.0f, wind_z = 3.0f, max_d = 10000.0f;
+        float wind_x = 3.0f, wind_z = 1.0f, max_d = 10000.0f;
 
         cloud_renderer_.updateCloudParameters(
         cloud_coverage, cloud_height, cloud_thickness,
