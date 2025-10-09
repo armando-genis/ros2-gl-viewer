@@ -455,15 +455,14 @@ public:
         cloud_coverage, cloud_height, cloud_thickness,
         cloud_absorp,   wind_x,       wind_z,          max_d);
 
-        // build a 400×240×400 m box (half-extents 200,120,200)
-        cloud_renderer_.createVolumeBox({200.f, 120.f, 200.f});
+        // vertical axis is Z now → {halfX, halfY, halfZ}
+        cloud_renderer_.createVolumeBox({200.f, 200.f, 120.f});  // 400×400×240 m box
 
-        // center of the box at (x=0, y=height+thickness*0.5, z=0)
         Eigen::Matrix4f M = Eigen::Matrix4f::Identity();
         M.block<3,1>(0,3) = Eigen::Vector3f(
-        0.f,
-        cloud_height + 0.5f * cloud_thickness,
-        0.f  // <- z = 0
+            0.f,
+            0.f,
+            cloud_height + 0.5f * cloud_thickness   // place the slab in Z
         );
         cloud_renderer_.setVolumeModelMatrix(M);
 

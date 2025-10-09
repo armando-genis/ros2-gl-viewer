@@ -250,165 +250,165 @@ bool CloudRenderer::createCloudShaders() {
     // Fragment shader - converted from the Three.js version
     // replace your fragment_shader string with this one:
     const char* fragment_shader = R"(
-    #version 460 core
-    precision highp float;
+        #version 460 core
 
-    in vec3 vPosWS;   // world-space position of the vertex (front face)
-    in vec3 vPosLS;   // local-space position inside the box
-    out vec4 FragColor;
+        in vec3 vPosWS;   // world-space position of the vertex (front face)
+        in vec3 vPosLS;   // local-space position inside the box
+        out vec4 FragColor;
 
-    uniform mat4 model;
-    uniform mat4 view;
-    uniform mat4 projection;
+        uniform mat4 model;
+        uniform mat4 view;
+        uniform mat4 projection;
 
-    // --- same uniforms you already had ---
-    uniform float uTime;
-    uniform vec3  uSunDirection;
-    uniform sampler2D t_PerlinNoise;
-    uniform vec2  uResolution;          // kept for parity; not used here
-    uniform float uCloudCoverage;
-    uniform float uCloudHeight;
-    uniform float uCloudThickness;
-    uniform float uCloudAbsorption;
-    uniform float uWindSpeedX;
-    uniform float uWindSpeedZ;
-    uniform float uMaxCloudDistance;    // not used by the box marcher; kept for parity
-    uniform vec3  cameraPosition;
+        // Params
+        uniform float uTime;
+        uniform vec3  uSunDirection;
+        uniform sampler2D t_PerlinNoise;
+        uniform vec2  uResolution;          // not used
+        uniform float uCloudCoverage;
+        uniform float uCloudHeight;
+        uniform float uCloudThickness;
+        uniform float uCloudAbsorption;
+        uniform float uWindSpeedX;
+        uniform float uWindSpeedZ;
+        uniform float uMaxCloudDistance;    // not used
+        uniform vec3  cameraPosition;
 
-    uniform vec3 uHalfExtents;
+        uniform vec3 uHalfExtents;
 
-    // ===============================
-    // Helpers copied from your sky FS
-    // ===============================
-    #define TWO_PI 6.28318530718
-    #define STEPS          22
-    #define LIGHT_STEPS     5
+        // 0 = Y-up, 1 = Z-up (your scene)
+        uniform int  uZUp;
 
-    float noise3D(in vec3 p) {
-        // Simple 2D lookup using xz; tweak scale if needed
-        vec2 uv = p.xz * 0.01;
-        return texture(t_PerlinNoise, uv).x;
-    }
+        #define STEPS          22
+        #define LIGHT_STEPS     5
 
-    const mat3 m = 1.21 * mat3( 0.00,  0.80,  0.60,
+        // Choose height axis and ground plane depending on up-axis
+        float getHeightCoord(vec3 p) { return (uZUp == 1) ? p.z : p.y; }
+        vec2  groundCoord (vec3 p)  { return (uZUp == 1) ? p.xy : p.xz; }
+
+        float noise3D(in vec3 p) {
+            // 2D perlin lookup over ground plane
+            vec2 uv = groundCoord(p) * 0.01;
+            return texture(t_PerlinNoise, uv).x;
+        }
+
+        const mat3 m = 1.21 * mat3( 0.00,  0.80,  0.60,
                                 -0.80,  0.36, -0.48,
                                 -0.60, -0.48,  0.64);
 
-    float fbm(vec3 p) {
-        float t;
-        float mult = 2.76434;
-        t  = 0.51749673 * noise3D(p); p = m * p * mult;
-        t += 0.25584929 * noise3D(p); p = m * p * mult;
-        t += 0.12527603 * noise3D(p); p = m * p * mult;
-        t += 0.06255931 * noise3D(p);
-        return t;
-    }
-
-    float cloud_density(vec3 posWS, vec3 windOffset, float h01) {
-        vec3 p = posWS * 0.0212242 + windOffset;
-
-        float dens = fbm(p);
-
-        // Coverage gate
-        float cov = 1.0 - uCloudCoverage;
-        dens *= smoothstep(cov, cov + 0.05, dens);
-
-        // Vertical band [uCloudHeight, uCloudHeight + uCloudThickness]
-        float height = posWS.y - uCloudHeight;
-        float heightAtt = 1.0 - clamp(height / uCloudThickness, 0.0, 1.0);
-        heightAtt *= heightAtt;
-
-        dens *= heightAtt;
-        return clamp(dens, 0.0, 1.0);
-    }
-
-    // *** FIXED: give the param a name and keep 4-arg signature ***
-    float cloud_light(vec3 posWS, vec3 dir_stepWS, vec3 windOffset, float cov) {
-        // Unused here, but keeps signature consistent with your call
-        cov += 0.0;
-
-        float T = 1.0;
-        vec3 pos = posWS;
-        for (int i = 0; i < LIGHT_STEPS; ++i) {
-            float dens = cloud_density(pos, windOffset, 0.0);
-            float T_i = exp(-uCloudAbsorption * dens);
-            T *= T_i;
-            pos += dir_stepWS;
-            if (T < 0.01) break;
+        float fbm(vec3 p) {
+            float t;
+            float mult = 2.76434;
+            t  = 0.51749673 * noise3D(p); p = m * p * mult;
+            t += 0.25584929 * noise3D(p); p = m * p * mult;
+            t += 0.12527603 * noise3D(p); p = m * p * mult;
+            t += 0.06255931 * noise3D(p);
+            return t;
         }
-        return T; // transmittance (0 = dark, 1 = full light)
-    }
 
-    // ===============================
-    // Box-ray intersection (LOCAL space)
-    // ===============================
-    bool intersectBoxLS(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax, out float t0, out float t1) {
-        vec3 inv = 1.0 / rd;
-        vec3 tbot = (bmin - ro) * inv;
-        vec3 ttop = (bmax - ro) * inv;
-        vec3 tmin = min(ttop, tbot);
-        vec3 tmax = max(ttop, tbot);
-        t0 = max(max(tmin.x, tmin.y), tmin.z);
-        t1 = min(min(tmax.x, tmax.y), tmax.z);
-        return t1 > max(t0, 0.0);
-    }
+        float cloud_density(vec3 posWS, vec3 windOffset, float h01) {
+            vec3 p = posWS * 0.0212242 + windOffset;
 
-    void main() {
-        // Transform camera into LOCAL space of the box
-        mat4 invModel = inverse(model);
-        vec3 camLS = (invModel * vec4(cameraPosition, 1.0)).xyz;
+            float dens = fbm(p);
 
-        // Ray direction in LOCAL space: towards this fragment's local position
-        vec3 dirLS = normalize(vPosLS - camLS);
+            // Coverage gate
+            float cov = 1.0 - uCloudCoverage;
+            dens *= smoothstep(cov, cov + 0.05, dens);
 
-        // Intersect with the LOCAL AABB
-        vec3 bmin = -uHalfExtents;
-        vec3 bmax =  uHalfExtents;
-        float tEnter, tExit;
-        if (!intersectBoxLS(camLS, dirLS, bmin, bmax, tEnter, tExit)) {
-            discard;
+            // Vertical band along the scene's up axis
+            float height    = getHeightCoord(posWS) - uCloudHeight;
+            float heightAtt = 1.0 - clamp(height / uCloudThickness, 0.0, 1.0);
+            heightAtt *= heightAtt;
+
+            dens *= heightAtt;
+            return clamp(dens, 0.0, 1.0);
         }
-        tEnter = max(tEnter, 0.0);
 
-        // March from entry to exit
-        float marchLen = (tExit - tEnter) / float(STEPS);
-        vec3  posLS = camLS + dirLS * tEnter;
+        // Keep 4-arg signature to match your C++ call
+        float cloud_light(vec3 posWS, vec3 dir_stepWS, vec3 windOffset, float cov) {
+            // “Use” cov to avoid unused warnings (no effect on result)
+            float covNoOp = cov * 0.0;
 
-        // Convert LS step to WORLD distance (used in Beer-Lambert)
-        vec3 stepWSvec = (model * vec4(dirLS * marchLen, 0.0)).xyz;
-        float stepWorldDist = length(stepWSvec);
-
-        vec3 posWS = (model * vec4(posLS, 1.0)).xyz;
-
-        // Wind offset (WORLD space)
-        vec3 windOffset = vec3(uTime * -uWindSpeedX, 0.0, uTime * -uWindSpeedZ);
-
-        vec3 C = vec3(0.0);
-        float T = 1.0;
-
-        for (int i = 0; i < STEPS; ++i) {
-            float dens = cloud_density(posWS, windOffset, float(i) / float(STEPS));
-            if (dens > 0.01) {
-                float T_i = exp(-uCloudAbsorption * dens * stepWorldDist);
-                float lightTrans = cloud_light(posWS, normalize(uSunDirection) * 5.0, windOffset, uCloudCoverage);
-
-
-                // Simple shading
-                vec3 base = vec3(0.15, 0.15, 0.2);
-                vec3 sunC = vec3(1.0, 0.9, 0.7);
-                vec3 col = mix(base, sunC, lightTrans);
-
-                C += T * col * dens * stepWorldDist;
+            float T = 1.0 + covNoOp;
+            vec3 pos = posWS;
+            for (int i = 0; i < LIGHT_STEPS; ++i) {
+                float dens = cloud_density(pos, windOffset, 0.0);
+                float T_i = exp(-uCloudAbsorption * dens);
                 T *= T_i;
+                pos += dir_stepWS;
                 if (T < 0.01) break;
             }
-            posLS += dirLS * marchLen;
-            posWS = (model * vec4(posLS, 1.0)).xyz;
+            return T; // transmittance (0 = dark, 1 = full light)
         }
 
-        float alpha = clamp(1.0 - T, 0.0, 1.0);
-        FragColor = vec4(C, alpha);
-    }
+        // AABB ray-box (LOCAL space)
+        bool intersectBoxLS(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax, out float t0, out float t1) {
+            vec3 inv = 1.0 / rd;
+            vec3 tbot = (bmin - ro) * inv;
+            vec3 ttop = (bmax - ro) * inv;
+            vec3 tmin = min(ttop, tbot);
+            vec3 tmax = max(ttop, tbot);
+            t0 = max(max(tmin.x, tmin.y), tmin.z);
+            t1 = min(min(tmax.x, tmax.y), tmax.z);
+            return t1 > max(t0, 0.0);
+        }
+
+        void main() {
+            // Camera in LOCAL space
+            mat4 invModel = inverse(model);
+            vec3 camLS = (invModel * vec4(cameraPosition, 1.0)).xyz;
+
+            // Ray toward this fragment (LOCAL space)
+            vec3 dirLS = normalize(vPosLS - camLS);
+
+            // AABB intersection (LOCAL)
+            vec3 bmin = -uHalfExtents;
+            vec3 bmax =  uHalfExtents;
+            float tEnter, tExit;
+            if (!intersectBoxLS(camLS, dirLS, bmin, bmax, tEnter, tExit)) {
+                discard;
+            }
+            tEnter = max(tEnter, 0.0);
+
+            // March
+            float marchLen = (tExit - tEnter) / float(STEPS);
+            vec3  posLS = camLS + dirLS * tEnter;
+
+            // Convert LS step to WORLD distance (Beer-Lambert)
+            vec3 stepWSvec = (model * vec4(dirLS * marchLen, 0.0)).xyz;
+            float stepWorldDist = length(stepWSvec);
+
+            vec3 posWS = (model * vec4(posLS, 1.0)).xyz;
+
+            // Wind on ground plane (XY if Z-up, XZ if Y-up)
+            vec3 windOffset = (uZUp == 1)
+                ? vec3(uTime * -uWindSpeedX, uTime * -uWindSpeedZ, 0.0)
+                : vec3(uTime * -uWindSpeedX, 0.0,                uTime * -uWindSpeedZ);
+
+            vec3 C = vec3(0.0);
+            float T = 1.0;
+
+            for (int i = 0; i < STEPS; ++i) {
+                float dens = cloud_density(posWS, windOffset, float(i) / float(STEPS));
+                if (dens > 0.01) {
+                    float T_i = exp(-uCloudAbsorption * dens * stepWorldDist);
+                    float lightTrans = cloud_light(posWS, normalize(uSunDirection) * 5.0, windOffset, uCloudCoverage);
+
+                    vec3 base = vec3(0.15, 0.15, 0.2);
+                    vec3 sunC = vec3(1.0, 0.9, 0.7);
+                    vec3 col = mix(base, sunC, lightTrans);
+
+                    C += T * col * dens * stepWorldDist;
+                    T *= T_i;
+                    if (T < 0.01) break;
+                }
+                posLS += dirLS * marchLen;
+                posWS = (model * vec4(posLS, 1.0)).xyz;
+            }
+
+            float alpha = clamp(1.0 - T, 0.0, 1.0);
+            FragColor = vec4(C, alpha);
+        }
     )";
 
 
@@ -500,7 +500,7 @@ void CloudRenderer::renderCloudVolume(const Eigen::Matrix4f& view,
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, perlin_texture_);
-    glUniform1i(glGetUniformLocation(prog,"t_PerlinNoise"), 0);
+    glUniform1i(glGetUniformLocation(prog, "uZUp"), 1); // Z-up
 
     // Blend clouds over opaque scene
     glEnable(GL_BLEND);
