@@ -328,9 +328,13 @@ SimpleMapSnapshotter::SimpleMapSnapshotter(Size size, float pixelRatio, const st
         initializeGeometry();
         initializeCircleShader();
         initializeCircleWalls();
+        initializePlaneShader();
     }
 
     std::cout << "Shaders and geometry initialized successfully" << std::endl;
+    
+    // Initialize plane color using hexToRGBA
+    plane_color_ = hexToRGBA("#c0c0c0", 1.0f);
 
 }
 
@@ -343,6 +347,24 @@ SimpleMapSnapshotter::~SimpleMapSnapshotter() {
         }
         landmark_cv_.notify_all();
         landmark_thread_.join();
+    }
+    
+    // Cleanup plane resources
+    if (plane_vao_ != 0) {
+        glDeleteVertexArrays(1, &plane_vao_);
+        plane_vao_ = 0;
+    }
+    if (plane_vbo_ != 0) {
+        glDeleteBuffers(1, &plane_vbo_);
+        plane_vbo_ = 0;
+    }
+    if (plane_ebo_ != 0) {
+        glDeleteBuffers(1, &plane_ebo_);
+        plane_ebo_ = 0;
+    }
+    if (plane_shader_program_ != 0) {
+        glDeleteProgram(plane_shader_program_);
+        plane_shader_program_ = 0;
     }
 }
 
@@ -910,8 +932,8 @@ SimpleMapSnapshotter::createBuildingGeometry(const std::vector<BuildingGeometry>
     // Keep vertices tile-local; placement happens in render via model translate
     const glm::vec3 offsetZero(0.0f);
 
-    glm::vec4 roof_color = hexToRGBA("#808080", 1.0f);  // roof color from comments (more light) 
-    glm::vec4 wall_color = hexToRGBA("#575757", 1.0f);  // walls color from comments (more dark)
+    glm::vec4 roof_color = hexToRGBA("#E8E5DA", 1.0f);  // roof color from comments (more light) 
+    glm::vec4 wall_color = hexToRGBA("#D0CAB4", 1.0f);  // walls color from comments (more dark)
     
     for (const auto& b : buildings) {
         createExtrudedPolygon(
@@ -1752,6 +1774,9 @@ void SimpleMapSnapshotter::updateTileGeometry() {
         
         std::cout << "Tile bounds: X(" << min_x << "-" << max_x 
                   << ") Y(" << min_y << "-" << max_y << ")" << std::endl;
+        
+        // Update plane size to match the loaded tiles
+        updatePlaneSize();
     }
     
     // Load geometry for each visible tile
@@ -2306,6 +2331,9 @@ void SimpleMapSnapshotter::updateTextureThrottled(float cameraDistance) {
 }
 
 void SimpleMapSnapshotter::renderMap(const glm::mat4& projection, const glm::mat4& view) {
+    // Render plane first as background
+    renderPlane(projection, view);
+    
     if (render_3d_mode_) {
         // Render 3D tile geometry
         if (!tile_geometry_.empty()) {
@@ -3178,7 +3206,155 @@ void SimpleMapSnapshotter::renderCircleOverlay(const glm::mat4& projection, cons
     renderCircleWalls(projection, view);  // vertical wall (cylinder side)
 }
 
+void SimpleMapSnapshotter::initializePlaneShader() {
+    if (plane_shader_program_ != 0) return;
+    
+    std::cout << "Initializing plane shader..." << std::endl;
+    
+    // Vertex shader source
+    const char* vertexShaderSource = R"(
+        #version 330 core
+        layout (location = 0) in vec3 aPos;
+        
+        uniform mat4 u_projection;
+        uniform mat4 u_view;
+        
+        void main() {
+            gl_Position = u_projection * u_view * vec4(aPos, 1.0);
+        }
+    )";
+    
+    // Fragment shader source
+    const char* fragmentShaderSource = R"(
+        #version 330 core
+        out vec4 FragColor;
+        
+        uniform vec4 u_color;
+        
+        void main() {
+            FragColor = u_color;
+        }
+    )";
+    
+    // Compile shaders
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+    
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+    
+    // Create shader program
+    plane_shader_program_ = glCreateProgram();
+    glAttachShader(plane_shader_program_, vertexShader);
+    glAttachShader(plane_shader_program_, fragmentShader);
+    glLinkProgram(plane_shader_program_);
+    
+    // Get uniform locations
+    u_p_proj_ = glGetUniformLocation(plane_shader_program_, "u_projection");
+    u_p_view_ = glGetUniformLocation(plane_shader_program_, "u_view");
+    u_p_color_ = glGetUniformLocation(plane_shader_program_, "u_color");
+    
+    // Clean up shaders
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+    
+    // Create plane geometry (match 3D geometry area - tiles * meters_per_tile_)
+    // Use a large enough area to cover all loaded tiles (will be updated dynamically)
+    float plane_size = meters_per_tile_ * 5.0f; // Initial size: 5x5 tiles worth of area
+    float vertices[] = {
+        -plane_size/2, -plane_size/2, plane_z_offset_,  // Bottom left
+         plane_size/2, -plane_size/2, plane_z_offset_,  // Bottom right
+         plane_size/2,  plane_size/2, plane_z_offset_,  // Top right
+        -plane_size/2,  plane_size/2, plane_z_offset_   // Top left
+    };
+    
+    unsigned int indices[] = {
+        0, 1, 2,  // First triangle
+        2, 3, 0   // Second triangle
+    };
+    
+    // Create VAO, VBO, EBO
+    glGenVertexArrays(1, &plane_vao_);
+    glGenBuffers(1, &plane_vbo_);
+    glGenBuffers(1, &plane_ebo_);
+    
+    glBindVertexArray(plane_vao_);
+    
+    glBindBuffer(GL_ARRAY_BUFFER, plane_vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, plane_ebo_);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    
+    // Set vertex attributes
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    
+    glBindVertexArray(0);
+    
+    plane_vertex_count_ = 6; // 2 triangles = 6 vertices
+    
+    std::cout << "Plane shader initialized successfully" << std::endl;
+}
 
+void SimpleMapSnapshotter::renderPlane(const glm::mat4& projection, const glm::mat4& view) {
+    if (!plane_enabled_ || plane_shader_program_ == 0) return;
+    
+    // Enable depth testing to ensure proper occlusion
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    
+    // Disable blending for solid plane
+    glDisable(GL_BLEND);
+    
+    // Use plane shader program
+    glUseProgram(plane_shader_program_);
+    
+    // Set uniforms
+    glUniformMatrix4fv(u_p_proj_, 1, GL_FALSE, glm::value_ptr(projection));
+    glUniformMatrix4fv(u_p_view_, 1, GL_FALSE, glm::value_ptr(view));
+    glUniform4fv(u_p_color_, 1, glm::value_ptr(plane_color_));
+    
+    // Bind VAO and draw
+    glBindVertexArray(plane_vao_);
+    glDrawElements(GL_TRIANGLES, plane_vertex_count_, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+    
+    // Cleanup
+    glUseProgram(0);
+    // Note: Don't disable depth testing here as other objects might need it
+}
+
+void SimpleMapSnapshotter::updatePlaneSize() {
+    if (plane_vao_ == 0 || !tile_bounds_valid_) return;
+    
+    // Calculate plane size based on actual tile bounds
+    uint32_t tile_count_x = current_tile_bounds_max_x_ - current_tile_bounds_min_x_ + 1;
+    uint32_t tile_count_y = current_tile_bounds_max_y_ - current_tile_bounds_min_y_ + 1;
+    
+    // Add some padding around the tiles
+    float padding = meters_per_tile_ * 0.5f; // Half tile padding
+    float plane_width = tile_count_x * meters_per_tile_ + padding;
+    float plane_height = tile_count_y * meters_per_tile_ + padding;
+    
+    std::cout << "Updating plane size: " << plane_width << "x" << plane_height 
+              << " meters (tiles: " << tile_count_x << "x" << tile_count_y << ")" << std::endl;
+    
+    // Update vertex data
+    float vertices[] = {
+        -plane_width/2, -plane_height/2, plane_z_offset_,  // Bottom left
+         plane_width/2, -plane_height/2, plane_z_offset_,  // Bottom right
+         plane_width/2,  plane_height/2, plane_z_offset_,  // Top right
+        -plane_width/2,  plane_height/2, plane_z_offset_   // Top left
+    };
+    
+    // Update VBO
+    glBindBuffer(GL_ARRAY_BUFFER, plane_vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
 
 } // namespace mbgl
 

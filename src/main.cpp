@@ -445,7 +445,7 @@ public:
         }
         std::cout << green << "Successfully initialized Cloud shader" << reset << std::endl;
 
-        float cloud_height    = 300.0f;
+        float cloud_height    = 200.0f;
         float cloud_thickness = 30.0f;
         float cloud_coverage  = 0.65f;
         float cloud_absorp    = 1.03f;

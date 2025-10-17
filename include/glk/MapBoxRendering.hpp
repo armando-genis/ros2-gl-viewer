@@ -285,6 +285,14 @@ public:
 
     void renderCircleOverlay(const glm::mat4& projection, const glm::mat4& view);
 
+    // === Plane below map methods ===
+    void initializePlaneShader();
+    void renderPlane(const glm::mat4& projection, const glm::mat4& view);
+    void setPlaneEnabled(bool enabled) { plane_enabled_ = enabled; }
+    void setPlaneZOffset(float z_offset) { plane_z_offset_ = z_offset; }
+    void setPlaneColor(const glm::vec4& color) { plane_color_ = color; }
+    void updatePlaneSize(); // Update plane size based on loaded tiles
+
 
     class Impl;
     
@@ -425,7 +433,18 @@ private:
     GLint  u_w_color_=-1, u_w_light_dir_=-1, u_w_light_color_=-1, u_w_ambient_color_=-1;
     GLsizei circle_wall_vertex_count_ = 0;   
     
+    // === Plane below map state ===
+    bool plane_enabled_ = true;
+    float plane_z_offset_ = -2.0f;  // Z offset for the plane below map
+    glm::vec4 plane_color_;  // Will be initialized with hexToRGBA("#c0c0c0", 1.0f)
     
+    // GL resources for plane
+    GLuint plane_shader_program_ = 0;
+    GLuint plane_vao_ = 0, plane_vbo_ = 0, plane_ebo_ = 0;
+    
+    // Uniform locations for plane
+    GLint u_p_proj_ = -1, u_p_view_ = -1, u_p_color_ = -1;
+    GLsizei plane_vertex_count_ = 0;
 
     std::unique_ptr<Impl> impl;
         
