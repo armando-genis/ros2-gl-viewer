@@ -95,3 +95,6 @@ Found frame: 'vectornav' with parent: 'base_link'
 /workspace/models/LOAM/cloudGlobal.pcd
 
 /workspace/models/sdv.glb
+/workspace/models/sombrero.glb
+/workspace/models/spooky.glb
+/workspace/models/ghost.glb

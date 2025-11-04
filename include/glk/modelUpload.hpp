@@ -47,6 +47,12 @@ struct PlyMesh
     float roughness_factor = 1.0f;
 
     Eigen::Matrix4f local_transform = Eigen::Matrix4f::Identity();
+    
+    // Offset from TF frame (in meters)
+    Eigen::Vector3f offset = Eigen::Vector3f::Zero();
+    
+    // Optional: store model name for UI display
+    std::string model_name = "";
 };
 
 class modelUpload

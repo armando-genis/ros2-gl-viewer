@@ -1246,23 +1246,147 @@ public:
 
         ImGui::Separator();
 
+        // ============================================
+        // Map Elements (Multiple Models Support)
+        // ============================================
         static bool show_load_input_map_element = false;
         static char meshmap_path[256] = "";
-        if (ImGui::Button("Load Map Elements"))
+        static int selected_map_element_frame = 0;
+        static float offset_x = 0.0f;
+        static float offset_y = 0.0f;
+        static float offset_z = 0.0f;
+        
+        if (ImGui::Button("Add Map Element"))
         {
             show_load_input_map_element = !show_load_input_map_element;
         }
 
         if (show_load_input_map_element)
         {
-            ImGui::InputText("Mesh Map File", meshmap_path, IM_ARRAYSIZE(meshmap_path));
+            ImGui::InputText("Model File", meshmap_path, IM_ARRAYSIZE(meshmap_path));
+            
+            // TF Frame selection
+            ImGui::Separator();
+            ImGui::Text("Assign to TF frame:");
             ImGui::SameLine();
-            if (ImGui::Button("OK"))
+            
+            bool has_frames = !available_frames_.empty();
+            const char *frame_preview = has_frames
+                                          ? available_frames_[selected_map_element_frame].c_str()
+                                          : "map";
+            
+            if (has_frames)
             {
-                // construct the buffer from the file
-                loaded_mesh_map = model_upload_.loadModel(meshmap_path);
-                mesh_map_loaded = true;
+                if (ImGui::BeginCombo("##map_element_frames", frame_preview))
+                {
+                    for (int n = 0; n < (int)available_frames_.size(); ++n)
+                    {
+                        bool is_selected = (selected_map_element_frame == n);
+                        if (ImGui::Selectable(available_frames_[n].c_str(), is_selected))
+                        {
+                            selected_map_element_frame = n;
+                        }
+                        if (is_selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No TF frames (using map)");
+            }
+            
+            // Offset controls
+            ImGui::Separator();
+            ImGui::Text("Offset from TF frame (meters):");
+            ImGui::InputFloat("X offset", &offset_x, 0.1f, 1.0f, "%.2f");
+            ImGui::InputFloat("Y offset", &offset_y, 0.1f, 1.0f, "%.2f");
+            ImGui::InputFloat("Z offset", &offset_z, 0.1f, 1.0f, "%.2f");
+            
+            ImGui::Separator();
+            if (ImGui::Button("Load Model"))
+            {
+                try
+                {
+                    // Load the mesh
+                    PlyMesh new_mesh = model_upload_.loadModel(meshmap_path);
+                    
+                    // Assign frame ID
+                    new_mesh.frame_id = has_frames
+                                            ? available_frames_[selected_map_element_frame]
+                                            : "map";
+                    
+                    // Set offset
+                    new_mesh.offset = Eigen::Vector3f(offset_x, offset_y, offset_z);
+                    
+                    // Extract model name from path
+                    std::string path_str(meshmap_path);
+                    size_t last_slash = path_str.find_last_of("/\\");
+                    new_mesh.model_name = (last_slash != std::string::npos) 
+                                            ? path_str.substr(last_slash + 1) 
+                                            : path_str;
+                    
+                    // Add to vector
+                    {
+                        std::lock_guard<std::mutex> lock(mesh_maps_mutex_);
+                        loaded_mesh_maps.push_back(new_mesh);
+                    }
+                    
+                    std::cout << green
+                              << "Loaded map element: " << new_mesh.model_name
+                              << " into frame: " << new_mesh.frame_id
+                              << " with offset: (" << offset_x << ", " << offset_y << ", " << offset_z << ")"
+                              << reset << std::endl;
+                    
+                    // Reset for next model
+                    offset_x = offset_y = offset_z = 0.0f;
+                }
+                catch (const std::exception &e)
+                {
+                    std::cerr << red << "Failed to load map element: " << e.what() << reset << std::endl;
+                }
                 show_load_input_map_element = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel"))
+            {
+                show_load_input_map_element = false;
+            }
+        }
+        
+        // Show loaded map elements
+        {
+            std::lock_guard<std::mutex> lock(mesh_maps_mutex_);
+            if (!loaded_mesh_maps.empty())
+            {
+                ImGui::Separator();
+                ImGui::Text("Loaded Map Elements (%zu):", loaded_mesh_maps.size());
+                
+                for (size_t i = 0; i < loaded_mesh_maps.size(); ++i)
+                {
+                    const auto &mesh = loaded_mesh_maps[i];
+                    ImGui::PushID(i);
+                    ImGui::Text("  %zu: %s [%s] offset:(%.1f, %.1f, %.1f)", 
+                                i + 1,
+                                mesh.model_name.c_str(),
+                                mesh.frame_id.c_str(),
+                                mesh.offset.x(),
+                                mesh.offset.y(),
+                                mesh.offset.z());
+                    
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove"))
+                    {
+                        glBindVertexArray(0);
+                        glUseProgram(0);
+                        model_upload_.cleanupMesh(loaded_mesh_maps[i]);
+                        loaded_mesh_maps.erase(loaded_mesh_maps.begin() + i);
+                        ImGui::PopID();
+                        break; // Exit loop after modifying vector
+                    }
+                    ImGui::PopID();
+                }
             }
         }
 
@@ -1282,14 +1406,14 @@ public:
         // ============================================
         // render grid
         // ============================================
-        // {
-        //     Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-        //     T.pretranslate(Eigen::Vector3f(0, 0, -0.02f));
-        //     shader.set_uniform("color_mode", 1);
-        //     shader.set_uniform("model_matrix", T.matrix());
-        //     shader.set_uniform("material_color", Eigen::Vector4f(0.8f, 0.8f, 0.8f, 1.0f));
-        //     grid_->draw(shader);
-        // }
+        {
+            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+            T.pretranslate(Eigen::Vector3f(0, 0, -0.02f));
+            shader.set_uniform("color_mode", 1);
+            shader.set_uniform("model_matrix", T.matrix());
+            shader.set_uniform("material_color", Eigen::Vector4f(0.8f, 0.8f, 0.8f, 1.0f));
+            grid_->draw(shader);
+        }
 
         // ============================================
         // render coordinate frames
@@ -1314,8 +1438,15 @@ public:
             Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
             text_renderer_.addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
 
+            std::vector<std::string> frame_names = {"map", "light_1", "light_2", "base_footprint"};
+
+
             for (auto &p : frame_transforms_)
             {
+                // quit the frames that are in the frame_names vector
+                if (find(frame_names.begin(), frame_names.end(), p.first) == frame_names.end())
+                    continue;
+
                 drawThickCoordinateFrame(shader, cube, p.second, axis_length, axis_thickness);
 
                 // Add frame name label
@@ -1395,11 +1526,61 @@ public:
         }
 
         // ============================================
-        // render meshes
+        // render map element meshes
         // ============================================
-        if (mesh_map_loaded)
         {
-            model_upload_.renderMesh(loaded_mesh_map, shader, tf_mutex_, frame_transforms_);
+            std::lock_guard<std::mutex> lock(mesh_maps_mutex_);
+            for (auto &mesh : loaded_mesh_maps)
+            {
+                // Apply offset by modifying the frame transform
+                Eigen::Isometry3f mesh_transform = Eigen::Isometry3f::Identity();
+                {
+                    std::lock_guard<std::mutex> lk(tf_mutex_);
+                    auto it = frame_transforms_.find(mesh.frame_id);
+                    if (it != frame_transforms_.end())
+                    {
+                        mesh_transform = it->second;
+                    }
+                }
+                
+                // Apply offset to the transform
+                mesh_transform.translate(mesh.offset);
+                
+                // Render based on type
+                if (mesh.type == 0) // GLB
+                {
+                    // Create temporary transform map with offset
+                    std::unordered_map<std::string, Eigen::Isometry3f> temp_transforms;
+                    temp_transforms[mesh.frame_id] = mesh_transform;
+                    model_upload_.renderGLBMesh(mesh, glb_shader_program_, tf_mutex_, temp_transforms);
+                    shader.use(); // Re-bind main shader after GLB rendering
+                }
+                else if (mesh.type == 1) // PLY
+                {
+                    // For PLY, we need to temporarily modify the frame transform
+                    Eigen::Isometry3f original_transform = Eigen::Isometry3f::Identity();
+                    bool had_transform = false;
+                    {
+                        std::lock_guard<std::mutex> lk(tf_mutex_);
+                        auto it = frame_transforms_.find(mesh.frame_id);
+                        if (it != frame_transforms_.end())
+                        {
+                            original_transform = it->second;
+                            had_transform = true;
+                            frame_transforms_[mesh.frame_id] = mesh_transform;
+                        }
+                    }
+                    
+                    model_upload_.renderMesh(mesh, shader, tf_mutex_, frame_transforms_);
+                    
+                    // Restore original transform
+                    if (had_transform)
+                    {
+                        std::lock_guard<std::mutex> lk(tf_mutex_);
+                        frame_transforms_[mesh.frame_id] = original_transform;
+                    }
+                }
+            }
         }
 
         if (mesh_glb_loaded && loaded_mesh_glb.type == 0) // 0 = GLB type
@@ -2824,9 +3005,9 @@ private:
     modelUpload model_upload_;
     GLuint glb_shader_program_ = 0;
 
-    // mesh map variables
-    PlyMesh loaded_mesh_map;
-    bool mesh_map_loaded = false;
+    // mesh map variables - support multiple map element meshes
+    std::vector<PlyMesh> loaded_mesh_maps;
+    std::mutex mesh_maps_mutex_;
 
     // lanelet2 loader
     LaneletLoader lanelet_loader_;

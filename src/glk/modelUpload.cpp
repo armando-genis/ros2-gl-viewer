@@ -465,25 +465,30 @@ PlyMesh modelUpload::loadGlb(const std::string &path)
 
     std::cout << "Found " << data->meshes_count << " mesh(es)" << std::endl;
 
-    //  Extract node transforms
-    Eigen::Matrix4f accumulated_transform = Eigen::Matrix4f::Identity();
-
-    // Process scene nodes to get transforms
+    // Extract transform from first root node (contains object's transform from Blender)
+    // This is stored in mesh.local_transform and applied during rendering
+    Eigen::Matrix4f object_transform = Eigen::Matrix4f::Identity();
+    
     if (data->scenes_count > 0)
     {
-        const cgltf_scene *scene = &data->scenes[0]; // Use first scene
-        std::cout << "Processing " << scene->nodes_count << " root nodes for transforms" << std::endl;
-
-        for (size_t i = 0; i < scene->nodes_count; ++i)
+        const cgltf_scene *scene = &data->scenes[0];
+        if (scene->nodes_count > 0)
         {
-            const cgltf_node *node = scene->nodes[i];
-            Eigen::Matrix4f node_transform = extractNodeTransform(node);
-            accumulated_transform = accumulated_transform * node_transform;
-            std::cout << "Applied transform from node " << i << std::endl;
+            // Extract ONLY the first root node's transform (the object's transform)
+            // Don't multiply multiple root nodes together (that was the bug for multi-object scenes)
+            const cgltf_node *first_node = scene->nodes[0];
+            object_transform = extractNodeTransform(first_node);
+            std::cout << "Extracted object transform from first root node" << std::endl;
+        }
+        else
+        {
+            std::cout << "No root nodes, using identity transform" << std::endl;
         }
     }
-
-    std::cout << "Final accumulated transform extracted" << std::endl;
+    else
+    {
+        std::cout << "No scenes, using identity transform" << std::endl;
+    }
 
     // Define Vertex structure first
     struct Vertex
@@ -716,6 +721,35 @@ PlyMesh modelUpload::loadGlb(const std::string &path)
 
     std::cout << "Combined all meshes: " << all_vertices.size() << " total vertices, " << all_indices.size() << " total indices" << std::endl;
 
+    // Calculate and display bounding box (for debugging, shows untransformed vertex data)
+    if (!all_vertices.empty())
+    {
+        float min_x = all_vertices[0].px, max_x = all_vertices[0].px;
+        float min_y = all_vertices[0].py, max_y = all_vertices[0].py;
+        float min_z = all_vertices[0].pz, max_z = all_vertices[0].pz;
+        
+        for (const auto& v : all_vertices)
+        {
+            min_x = std::min(min_x, v.px); max_x = std::max(max_x, v.px);
+            min_y = std::min(min_y, v.py); max_y = std::max(max_y, v.py);
+            min_z = std::min(min_z, v.pz); max_z = std::max(max_z, v.pz);
+        }
+        
+        float center_x = (min_x + max_x) / 2.0f;
+        float center_y = (min_y + max_y) / 2.0f;
+        float center_z = (min_z + max_z) / 2.0f;
+        
+        float size_x = max_x - min_x;
+        float size_y = max_y - min_y;
+        float size_z = max_z - min_z;
+        
+        std::cout << "Model bounding box (preserving original Blender position):" << std::endl;
+        std::cout << "  X: [" << min_x << ", " << max_x << "] (size: " << size_x << ")" << std::endl;
+        std::cout << "  Y: [" << min_y << ", " << max_y << "] (size: " << size_y << ")" << std::endl;
+        std::cout << "  Z: [" << min_z << ", " << max_z << "] (size: " << size_z << ")" << std::endl;
+        std::cout << "  Center: (" << center_x << ", " << center_y << ", " << center_z << ")" << std::endl;
+    }
+
     // Upload combined mesh to OpenGL with detailed error checking
     std::cout << "Uploading combined mesh to OpenGL..." << std::endl;
 
@@ -889,7 +923,7 @@ PlyMesh modelUpload::loadGlb(const std::string &path)
     mesh.base_color[3] = base_color[3];
     mesh.metallic_factor = metallic_factor;
     mesh.roughness_factor = roughness_factor;
-    mesh.local_transform = accumulated_transform;
+    mesh.local_transform = object_transform; // Store object transform to apply during rendering
     mesh.type = 0;
 
     std::cout << "Stored in mesh - Texture ID: " << mesh.texture_id
