@@ -2158,7 +2158,8 @@ public:
                             0.6f,        // Alpha
                             1,            // colorMode (gradient effect)
                             -0.5f,          // z_offset
-                            0.5f          // icon_z_offset
+                            0.5f,          // icon_z_offset
+                            obstacle.type  // type (e.g., "CAR", "PEDESTRIAN", etc.)
                         );
                     }
                 }

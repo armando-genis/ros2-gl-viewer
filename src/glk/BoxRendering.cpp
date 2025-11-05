@@ -70,7 +70,8 @@ void BoxRenderer::addBoundingBox(const std::vector<Eigen::Vector3f>& corners,
                          float alpha,
                                   int colorMode,
                                   float z_offset,
-                                  float icon_z_offset) {
+                                  float icon_z_offset,
+                                  const std::string& type) {
     if (corners.size() != 8) {
         std::cerr << "BoundingBox must have exactly 8 corners" << std::endl;
         return;
@@ -88,6 +89,7 @@ void BoxRenderer::addBoundingBox(const std::vector<Eigen::Vector3f>& corners,
     bbox.colorMode = colorMode;
     bbox.visible = true;
     bbox.icon_z_offset = icon_z_offset;
+    bbox.type = type;
     
     // Generate geometry for this bounding box
     generateBoundingBoxGeometry(bbox);
@@ -441,7 +443,7 @@ void BoxRenderer::renderIcons(const Eigen::Matrix4f& view, const Eigen::Matrix4f
     std::vector<float> circle_vertices;
     
     for (const auto& bbox : bounding_boxes_) {
-        if (!bbox.visible || bbox.corners.size() != 8) continue;
+        if (!bbox.visible || bbox.corners.size() != 8 || bbox.type != "CAR") continue;
         
         // Calculate center of top face
         Eigen::Vector3f top_center = Eigen::Vector3f::Zero();
@@ -524,7 +526,7 @@ void BoxRenderer::renderIcons(const Eigen::Matrix4f& view, const Eigen::Matrix4f
         int vertex_offset = 0;
         
         for (const auto& bbox : bounding_boxes_) {
-            if (!bbox.visible || bbox.corners.size() != 8) continue;
+            if (!bbox.visible || bbox.corners.size() != 8 || bbox.type != "CAR") continue;
             
             // Set color for this circle (alpha always 1.0f for full opacity)
             if (loc_box_color >= 0) glUniform3f(loc_box_color, bbox.color.x(), bbox.color.y(), bbox.color.z());
@@ -559,7 +561,7 @@ void BoxRenderer::renderIcons(const Eigen::Matrix4f& view, const Eigen::Matrix4f
     std::vector<float> icon_vertices;
     
     for (const auto& bbox : bounding_boxes_) {
-        if (!bbox.visible || bbox.corners.size() != 8) continue;
+        if (!bbox.visible || bbox.corners.size() != 8 || bbox.type != "CAR") continue;
         
         // Calculate center of top face
         Eigen::Vector3f top_center = Eigen::Vector3f::Zero();

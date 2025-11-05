@@ -2,6 +2,7 @@
 #define GLK_BOX_RENDERING_HPP
 
 #include <vector>
+#include <string>
 #include <Eigen/Dense>
 #include <GL/gl3w.h>
 
@@ -24,11 +25,12 @@ struct BoundingBox {
     int colorMode;                          // 0=solid, 1=edges->center gradient, 2=center->edges gradient
     bool visible;                           // Visibility flag
     float icon_z_offset;                    // Vertical offset for icon positioning
+    std::string type;                       // Type of obstacle (e.g., "CAR", "PEDESTRIAN", etc.)
     
     std::vector<BoxVertex> vertices;        // Generated vertices for rendering
     
     BoundingBox() : color(1.0f, 1.0f, 1.0f), alpha(1.0f), 
-                     colorMode(1), visible(true), icon_z_offset(0.0f) {}
+                     colorMode(1), visible(true), icon_z_offset(0.0f), type("") {}
 };
 
 class BoxRenderer {
@@ -48,12 +50,14 @@ public:
     // colorMode: 0=solid, 1=edges->center gradient, 2=center->edges gradient
     // z_offset: vertical offset to apply to all corners (default: 0.0)
     // icon_z_offset: additional vertical offset for icon positioning (default: 0.0)
+    // type: type of obstacle (e.g., "CAR", "PEDESTRIAN", etc.) - used for icon rendering
     void addBoundingBox(const std::vector<Eigen::Vector3f>& corners,
                         const Eigen::Vector3f& color,
                         float alpha = 1.0f,
                         int colorMode = 1,
                         float z_offset = 0.0f,
-                        float icon_z_offset = 0.0f);
+                        float icon_z_offset = 0.0f,
+                        const std::string& type = "");
     
     // Render all boxes
     void renderBoxes(const Eigen::Matrix4f& view, const Eigen::Matrix4f& projection);
