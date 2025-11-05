@@ -98,3 +98,7 @@ Found frame: 'vectornav' with parent: 'base_link'
 /workspace/models/sombrero.glb
 /workspace/models/spooky.glb
 /workspace/models/ghost.glb
+
+/workspace/models/merged_rot.glb
+/workspace/models/hdl64.glb
+

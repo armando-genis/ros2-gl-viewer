@@ -29,6 +29,8 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <obstacles_information_msgs/msg/obstacle_collection.hpp>
+#include <obstacles_information_msgs/msg/obstacle.hpp>
 
 // Eigen
 #include <Eigen/Core>
@@ -47,6 +49,7 @@
 #include "glk/LaneletLoader.hpp"
 #include "glk/modelUpload.hpp"
 #include "glk/ThickLines.hpp"
+#include "glk/BoxRendering.hpp"
 
 #include <guik/gl_canvas.hpp>
 #include <guik/camera_control.hpp>
@@ -130,6 +133,16 @@ struct PathTopic
     size_t num_points = 0;
 };
 
+struct ObstacleTopic
+{
+    std::string topic_name;
+    std::string frame_id;
+    rclcpp::Subscription<obstacles_information_msgs::msg::ObstacleCollection>::SharedPtr sub;
+    obstacles_information_msgs::msg::ObstacleCollection::SharedPtr obstacle_collection;
+    Eigen::Isometry3f transform = Eigen::Isometry3f::Identity();
+    std::chrono::steady_clock::time_point last_update;
+};
+
 class Ros2GLViewer : public guik::Application
 {
 public:
@@ -189,6 +202,14 @@ public:
         if (tf_listener_ != nullptr)
         {
             tf_listener_->~TransformListener();
+        }
+
+        // ======= BOX SHADER CLEANUP =======
+        if (box_renderer_)
+        {
+            box_renderer_->cleanupBoxRendering();
+            box_renderer_.reset();
+            std::cout << green << "Box renderer cleaned up" << reset << std::endl;
         }
     }
 
@@ -436,6 +457,22 @@ public:
             return false;
         }
         std::cout << green << "Successfully initialized Path shader" << reset << std::endl;
+
+        // ======= BOX SHADER INITIALIZATION =======
+        box_renderer_ = std::make_unique<glk::BoxRenderer>();
+        if (!box_renderer_->initBoxRendering())
+        {
+            std::cerr << "Failed to initialize box rendering" << std::endl;
+            return false;
+        }
+        std::cout << green << "Successfully initialized Box shader" << reset << std::endl;
+
+        if (!box_renderer_->loadIconTexture("car_icon.png"))
+        {
+            std::cerr << "Failed to load icon texture" << std::endl;
+            return false;
+        }
+        std::cout << green << "Successfully loaded icon texture" << reset << std::endl;
 
         // ======= CLOUD SHADER INITIALIZATION =======
         if (!cloud_renderer_.initCloudRendering())
@@ -840,6 +877,10 @@ public:
                         {
                             type_short = "Path";
                         }
+                        else if (type_short.find("obstacles_information_msgs/msg/ObstacleCollection") != std::string::npos)
+                        {
+                            type_short = "ObstacleCollection";
+                        }
                         else if (type_short.find("geometry_msgs/msg/PoseStamped") != std::string::npos)
                         {
                             type_short = "PoseStamped";
@@ -896,6 +937,11 @@ public:
                 {
                     button_text = "+ Add Path";
                     action_type = "path";
+                }
+                else if (topic_type.find("obstacles_information_msgs/msg/ObstacleCollection") != std::string::npos)
+                {
+                    button_text = "+ Add Obstacles";
+                    action_type = "obstacles";
                 }
                 else if (topic_type.find("geometry_msgs/msg/PoseStamped") != std::string::npos)
                 {
@@ -972,6 +1018,10 @@ public:
                     {
                         addPathTopic(selected_topic, path_type_selection, path_color_mode, path_color_selection);
                     }
+                    else if (action_type == "obstacles")
+                    {
+                        addObstacleTopic(selected_topic);
+                    }
                     else if (action_type == "pose")
                     {
                         // addPoseTopic(selected_topic);
@@ -994,6 +1044,7 @@ public:
                     removePointCloudTopic(selected_topic);
                     removeMarkerArrayTopic(selected_topic);
                     removePathTopic(selected_topic);
+                    removeObstacleTopic(selected_topic);
                     // removeGPSTopic(selected_topic); // GPS is handled separately
 
                     selected_topic_idx_ = -1;
@@ -1054,6 +1105,21 @@ public:
                         ImGui::Text("  • %s (%zu poses) [%s, %s, %s]", pt->topic_name.c_str(),
                                     pt->path ? pt->path->poses.size() : 0, type_str, color_mode_str, path_color_str);
                     }
+                }
+            }
+        }
+
+        // Show currently subscribed obstacle topics
+        {
+            std::lock_guard lk(obstacle_topics_mutex_);
+            if (!obstacle_topics_.empty())
+            {
+                ImGui::Separator();
+                ImGui::Text("Subscribed Obstacle Topics:");
+                for (const auto &ot : obstacle_topics_)
+                {
+                    ImGui::Text("  • %s (%zu obstacles)", ot->topic_name.c_str(),
+                                ot->obstacle_collection ? ot->obstacle_collection->obstacles.size() : 0);
                 }
             }
         }
@@ -1406,14 +1472,14 @@ public:
         // ============================================
         // render grid
         // ============================================
-        {
-            Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
-            T.pretranslate(Eigen::Vector3f(0, 0, -0.02f));
-            shader.set_uniform("color_mode", 1);
-            shader.set_uniform("model_matrix", T.matrix());
-            shader.set_uniform("material_color", Eigen::Vector4f(0.8f, 0.8f, 0.8f, 1.0f));
-            grid_->draw(shader);
-        }
+        // {
+        //     Eigen::Isometry3f T = Eigen::Isometry3f::Identity();
+        //     T.pretranslate(Eigen::Vector3f(0, 0, -0.02f));
+        //     shader.set_uniform("color_mode", 1);
+        //     shader.set_uniform("model_matrix", T.matrix());
+        //     shader.set_uniform("material_color", Eigen::Vector4f(0.8f, 0.8f, 0.8f, 1.0f));
+        //     grid_->draw(shader);
+        // }
 
         // ============================================
         // render coordinate frames
@@ -1438,14 +1504,16 @@ public:
             Eigen::Vector3f text_position = Eigen::Vector3f(0.0f, 0.0f, -0.1f);
             text_renderer_.addWorldText(fixed_frame_, text_position, Eigen::Vector3f(1.0f, 1.0f, 1.0f), 0.005f, 0.0f);
 
-            std::vector<std::string> frame_names = {"map", "light_1", "light_2", "base_footprint"};
+            // std::vector<std::string> frame_names = {"map", "light_1", "light_2", "base_footprint"};
+            std::vector<std::string> frame_names = {};
+
 
 
             for (auto &p : frame_transforms_)
             {
-                // quit the frames that are in the frame_names vector
-                if (find(frame_names.begin(), frame_names.end(), p.first) == frame_names.end())
-                    continue;
+                // // quit the frames that are in the frame_names vector
+                // if (find(frame_names.begin(), frame_names.end(), p.first) == frame_names.end())
+                //     continue;
 
                 drawThickCoordinateFrame(shader, cube, p.second, axis_length, axis_thickness);
 
@@ -1460,56 +1528,56 @@ public:
         // lights
         // ============================================
 
-        {
-            // 1) compute elapsed time
-            auto now = std::chrono::steady_clock::now();
-            float t = std::chrono::duration<float>(now - blink_start_).count();
+        // {
+        //     // 1) compute elapsed time
+        //     auto now = std::chrono::steady_clock::now();
+        //     float t = std::chrono::duration<float>(now - blink_start_).count();
 
-            // 2) new blink logic
-            constexpr float offTime = 0.5f;            // first 0.5 s = dim only
-            constexpr float onTime = 2.5f;             // next 2.5 s = bright
-            constexpr float period = offTime + onTime; // total = 3 s
-            float phase = std::fmod(t, period);
+        //     // 2) new blink logic
+        //     constexpr float offTime = 0.5f;            // first 0.5 s = dim only
+        //     constexpr float onTime = 2.5f;             // next 2.5 s = bright
+        //     constexpr float period = offTime + onTime; // total = 3 s
+        //     float phase = std::fmod(t, period);
 
-            bool lightOn = (phase >= offTime); // off for [0,0.5), on for [0.5,3)
+        //     bool lightOn = (phase >= offTime); // off for [0,0.5), on for [0.5,3)
 
-            shader.set_uniform("color_mode", 1);
+        //     shader.set_uniform("color_mode", 1);
 
-            const std::array<const char *, 2> frames = {"light_1", "light_2"};
-            for (auto frame_name : frames)
-            {
-                Eigen::Affine3f M = Eigen::Affine3f::Identity();
-                {
-                    std::lock_guard<std::mutex> lk(tf_mutex_);
-                    auto it = frame_transforms_.find(frame_name);
-                    if (it != frame_transforms_.end())
-                        M = it->second;
-                }
+        //     const std::array<const char *, 2> frames = {"light_1", "light_2"};
+        //     for (auto frame_name : frames)
+        //     {
+        //         Eigen::Affine3f M = Eigen::Affine3f::Identity();
+        //         {
+        //             std::lock_guard<std::mutex> lk(tf_mutex_);
+        //             auto it = frame_transforms_.find(frame_name);
+        //             if (it != frame_transforms_.end())
+        //                 M = it->second;
+        //         }
 
-                // Create rounded rectangle shape (car tail light)
-                // Main rectangular body with slight rounding via sphere
-                const auto &sphere = glk::Primitives::instance()->primitive(glk::Primitives::SPHERE);
+        //         // Create rounded rectangle shape (car tail light)
+        //         // Main rectangular body with slight rounding via sphere
+        //         const auto &sphere = glk::Primitives::instance()->primitive(glk::Primitives::SPHERE);
 
-                // Choose color based on blink state
-                Eigen::Vector4f lightColor;
-                if (lightOn)
-                {
-                    lightColor = Eigen::Vector4f(1.0f, 0.1f, 0.1f, 1.0f); // Bright red when on
-                }
-                else
-                {
-                    lightColor = Eigen::Vector4f(0.35f, 0.05f, 0.05f, 1.0f); // Dim red when off
-                }
-                shader.set_uniform("material_color", lightColor);
+        //         // Choose color based on blink state
+        //         Eigen::Vector4f lightColor;
+        //         if (lightOn)
+        //         {
+        //             lightColor = Eigen::Vector4f(1.0f, 0.1f, 0.1f, 1.0f); // Bright red when on
+        //         }
+        //         else
+        //         {
+        //             lightColor = Eigen::Vector4f(0.35f, 0.05f, 0.05f, 1.0f); // Dim red when off
+        //         }
+        //         shader.set_uniform("material_color", lightColor);
 
-                // Draw rounded rectangle as scaled sphere (wider than tall)
-                Eigen::Affine3f lightTransform = M;
-                lightTransform.rotate(Eigen::AngleAxisf(M_PI / 2.0f, Eigen::Vector3f::UnitZ())); // Rotate 90 degrees around Z
-                lightTransform.scale(Eigen::Vector3f(0.17f, 0.12f, 0.08f));                      // Wide, medium height, shallow depth
-                shader.set_uniform("model_matrix", lightTransform.matrix());
-                sphere.draw(shader);
-            }
-        }
+        //         // Draw rounded rectangle as scaled sphere (wider than tall)
+        //         Eigen::Affine3f lightTransform = M;
+        //         lightTransform.rotate(Eigen::AngleAxisf(M_PI / 2.0f, Eigen::Vector3f::UnitZ())); // Rotate 90 degrees around Z
+        //         lightTransform.scale(Eigen::Vector3f(0.17f, 0.12f, 0.08f));                      // Wide, medium height, shallow depth
+        //         shader.set_uniform("model_matrix", lightTransform.matrix());
+        //         sphere.draw(shader);
+        //     }
+        // }
 
         // ============================================
         // render PCD point cloud
@@ -1609,6 +1677,7 @@ public:
 
             shader.use();
         }
+        
         // ============================================
         // render path topics using shader-based approach
         // ============================================
@@ -1764,6 +1833,346 @@ public:
                 glDrawArrays(GL_POINTS, 0, GLsizei(n));
                 glBindVertexArray(0);
             }
+        }
+
+        shader.use();
+
+        // ============================================
+        // Render MarkerArray topics
+        // ============================================
+        {
+            std::lock_guard lk(marker_array_topics_mutex_);
+            
+            static int debug_counter = 0;
+            bool should_debug = (debug_counter++ % 60 == 0); // Debug every ~1 second at 60fps
+            
+            // Note: Don't clear paths here - we want to keep path topic paths AND marker lines
+            
+            for (auto &mt : marker_array_topics_)
+            {
+                if (!mt->marker_array || mt->marker_array->markers.empty())
+                    continue;
+
+                if (should_debug)
+                {
+                    std::cout << "📊 Rendering " << mt->marker_array->markers.size() 
+                              << " markers from topic: " << mt->topic_name 
+                              << " (frame: " << mt->frame_id << ")";
+                    
+                    // Check if we need to look up transform
+                    if (mt->frame_id != fixed_frame_)
+                    {
+                        if (mt->transform.matrix() == Eigen::Isometry3f::Identity().matrix())
+                        {
+                            std::cout << " ⚠️ Frame '" << mt->frame_id << "' != fixed_frame '" 
+                                      << fixed_frame_ << "' but no TF found - rendering at marker's local coordinates" << std::endl;
+                        }
+                        else
+                        {
+                            std::cout << " ✅ Transform found" << std::endl;
+                        }
+                    }
+                    else
+                    {
+                        std::cout << " ℹ️ Same as fixed frame, no transform needed" << std::endl;
+                    }
+                }
+
+                for (const auto &marker : mt->marker_array->markers)
+                {
+                    // Skip deleted markers
+                    if (marker.action == visualization_msgs::msg::Marker::DELETE ||
+                        marker.action == visualization_msgs::msg::Marker::DELETEALL)
+                        continue;
+
+                    // Skip markers with zero or very low alpha
+                    if (marker.color.a < 0.01f)
+                    {
+                        if (should_debug)
+                            std::cout << "  ⚠️ Skipping marker with alpha: " << marker.color.a << std::endl;
+                        continue;
+                    }
+
+                    // Skip TEXT markers (type 9) - we'll handle them separately with text renderer
+                    if (marker.type == visualization_msgs::msg::Marker::TEXT_VIEW_FACING)
+                    {
+                        if (should_debug)
+                            std::cout << "  ℹ️ Skipping TEXT marker (type 9): \"" << marker.text << "\"" << std::endl;
+                        
+                        // Add text to text renderer
+                        Eigen::Vector3f text_pos = mt->transform * Eigen::Vector3f(
+                            marker.pose.position.x,
+                            marker.pose.position.y,
+                            marker.pose.position.z
+                        );
+                        
+                        Eigen::Vector3f text_color(marker.color.r, marker.color.g, marker.color.b);
+                        float text_scale = marker.scale.z > 0 ? marker.scale.z : 0.3f;
+                        text_renderer_.addWorldText(marker.text, text_pos, text_color, text_scale * 0.01f, 0.0f);
+                        continue;
+                    }
+
+                    // Apply transform
+                    Eigen::Isometry3f model_matrix = mt->transform;
+                    
+                    if (should_debug)
+                    {
+                        std::cout << "  Marker type: " << marker.type 
+                                  << " pos: [" << marker.pose.position.x << ", "
+                                  << marker.pose.position.y << ", " 
+                                  << marker.pose.position.z << "]"
+                                  << " scale: [" << marker.scale.x << ", "
+                                  << marker.scale.y << ", "
+                                  << marker.scale.z << "]"
+                                  << " color: [" << marker.color.r << ", "
+                                  << marker.color.g << ", "
+                                  << marker.color.b << ", "
+                                  << marker.color.a << "]"
+                                  << " points: " << marker.points.size() << std::endl;
+                    }
+                    
+                    // Apply marker's pose
+                    Eigen::Quaternionf q(
+                        marker.pose.orientation.w,
+                        marker.pose.orientation.x,
+                        marker.pose.orientation.y,
+                        marker.pose.orientation.z
+                    );
+                    Eigen::Vector3f pos(
+                        marker.pose.position.x,
+                        marker.pose.position.y,
+                        marker.pose.position.z
+                    );
+                    
+                    Eigen::Isometry3f marker_pose = Eigen::Isometry3f::Identity();
+                    marker_pose.rotate(q);
+                    marker_pose.pretranslate(pos);
+                    model_matrix = model_matrix * marker_pose;
+
+                    shader.set_uniform("model_matrix", model_matrix.matrix());
+                    shader.set_uniform("color_mode", 1); // Flat color mode
+
+                    // Extract marker color
+                    Eigen::Vector4f color(
+                        marker.color.r,
+                        marker.color.g,
+                        marker.color.b,
+                        marker.color.a
+                    );
+                    shader.set_uniform("material_color", color);
+
+                    // Render based on marker type
+                    if (marker.type == visualization_msgs::msg::Marker::LINE_LIST)
+                    {
+                        // LINE_LIST: pairs of points define lines
+                        if (marker.points.size() < 2 || marker.points.size() % 2 != 0)
+                        {
+                            if (should_debug)
+                                std::cout << "  ⚠️ LINE_LIST needs even number of points >= 2, got " 
+                                          << marker.points.size() << std::endl;
+                            continue;
+                        }
+
+                        if (should_debug)
+                        {
+                            std::cout << "  ✅ Drawing " << (marker.points.size()/2) << " lines from LINE_LIST" << std::endl;
+                        }
+ 
+                        // Draw lines using path renderer
+                        for (size_t i = 0; i < marker.points.size(); i += 2)
+                        {
+                            // Transform both points
+                            Eigen::Vector3f p1 = model_matrix * Eigen::Vector3f(
+                                marker.points[i].x,
+                                marker.points[i].y,
+                                marker.points[i].z
+                            );
+                            Eigen::Vector3f p2 = model_matrix * Eigen::Vector3f(
+                                marker.points[i+1].x,
+                                marker.points[i+1].y,
+                                marker.points[i+1].z
+                            );
+
+                            std::vector<Eigen::Vector3f> line_points = {p1, p2};
+                            Eigen::Vector3f line_color(marker.color.r, marker.color.g, marker.color.b);
+                            float line_width = marker.scale.x > 0 ? marker.scale.x : 0.05f;
+                            
+                            // Add line segment to path renderer
+                            path_renderer_.addPathSegment(line_points, line_color, line_width, 0, 0, marker.color.a);
+                        }
+                    }
+                    else if (marker.type == visualization_msgs::msg::Marker::CUBE)
+                    {
+                        const auto &cube = glk::Primitives::instance()->primitive(glk::Primitives::CUBE);
+                        Eigen::Affine3f scale_transform(model_matrix.matrix());
+                        scale_transform.scale(Eigen::Vector3f(
+                            marker.scale.x,
+                            marker.scale.y,
+                            marker.scale.z
+                        ));
+                        shader.set_uniform("model_matrix", scale_transform.matrix());
+                        cube.draw(shader);
+                    }
+                    else if (marker.type == visualization_msgs::msg::Marker::SPHERE)
+                    {
+                        const auto &sphere = glk::Primitives::instance()->primitive(glk::Primitives::SPHERE);
+                        Eigen::Affine3f scale_transform(model_matrix.matrix());
+                        scale_transform.scale(Eigen::Vector3f(
+                            marker.scale.x,
+                            marker.scale.y,
+                            marker.scale.z
+                        ));
+                        shader.set_uniform("model_matrix", scale_transform.matrix());
+                        sphere.draw(shader);
+                    }
+                    else if (marker.type == visualization_msgs::msg::Marker::CYLINDER)
+                    {
+                        // Use sphere for cylinder (closest available primitive)
+                        const auto &sphere = glk::Primitives::instance()->primitive(glk::Primitives::SPHERE);
+                        Eigen::Affine3f scale_transform(model_matrix.matrix());
+                        scale_transform.scale(Eigen::Vector3f(
+                            marker.scale.x,
+                            marker.scale.y,
+                            marker.scale.z
+                        ));
+                        shader.set_uniform("model_matrix", scale_transform.matrix());
+                        sphere.draw(shader);
+                    }
+                    else if (marker.type == visualization_msgs::msg::Marker::ARROW)
+                    {
+                        // Render arrow using cone (shaft + head)
+                        const auto &cone = glk::Primitives::instance()->primitive(glk::Primitives::CONE);
+                        
+                        // Arrow shaft (stretched cone)
+                        Eigen::Affine3f shaft_transform(model_matrix.matrix());
+                        float shaft_length = marker.scale.x * 0.7f; // 70% of length is shaft
+                        float shaft_radius = marker.scale.y;
+                        shaft_transform.scale(Eigen::Vector3f(shaft_radius, shaft_radius, shaft_length));
+                        shader.set_uniform("model_matrix", shaft_transform.matrix());
+                        cone.draw(shader);
+                        
+                        // Arrow head (cone)
+                        Eigen::Affine3f head_transform(model_matrix.matrix());
+                        float head_length = marker.scale.x * 0.3f; // 30% of length is head
+                        float head_radius = marker.scale.y * 2.0f;
+                        head_transform.translate(Eigen::Vector3f(0, 0, shaft_length));
+                        head_transform.scale(Eigen::Vector3f(head_radius, head_radius, head_length));
+                        shader.set_uniform("model_matrix", head_transform.matrix());
+                        cone.draw(shader);
+                    }
+                    else
+                    {
+                        // Unsupported marker type - use cube as fallback
+                        if (should_debug)
+                        {
+                            std::cout << "  ⚠️ Unsupported marker type: " << marker.type 
+                                      << " (using CUBE as fallback)" << std::endl;
+                        }
+                        const auto &cube = glk::Primitives::instance()->primitive(glk::Primitives::CUBE);
+                        Eigen::Affine3f scale_transform(model_matrix.matrix());
+                        scale_transform.scale(Eigen::Vector3f(
+                            marker.scale.x > 0 ? marker.scale.x : 1.0f,
+                            marker.scale.y > 0 ? marker.scale.y : 1.0f,
+                            marker.scale.z > 0 ? marker.scale.z : 1.0f
+                        ));
+                        shader.set_uniform("model_matrix", scale_transform.matrix());
+                        cube.draw(shader);
+                    }
+                }
+            }
+        }
+
+        shader.use();
+
+        // Render marker lines (LINE_LIST markers added to path renderer)
+        path_renderer_.renderPaths(view, projection);
+        shader.use();
+
+        // ============================================
+        // Render obstacle bounding boxes
+        // ============================================
+        {
+            std::lock_guard lk(obstacle_topics_mutex_);
+
+            // Clear previous boxes
+            if (box_renderer_)
+            {
+                box_renderer_->clearBoxes();
+            }
+
+            // Add all obstacle bounding boxes
+            for (auto &ot : obstacle_topics_)
+            {
+                if (!ot->obstacle_collection || ot->obstacle_collection->obstacles.empty())
+                    continue;
+
+                for (const auto &obstacle : ot->obstacle_collection->obstacles)
+                {
+                    // Check if polygon has 8 points (bounding box format)
+                    if (obstacle.polygon.points.size() != 8)
+                    {
+                        std::cerr << "⚠️ Obstacle polygon has " << obstacle.polygon.points.size() 
+                                  << " points, expected 8" << std::endl;
+                        continue;
+                    }
+
+                    // Extract all 8 corners and transform to world space
+                    // Order: bottom-back-left, bottom-back-right, bottom-front-right, bottom-front-left,
+                    //        top-back-left, top-back-right, top-front-right, top-front-left
+                    std::vector<Eigen::Vector3f> corners_3d(8);
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        Eigen::Vector3f local_pos(
+                            obstacle.polygon.points[i].x,
+                            obstacle.polygon.points[i].y,
+                            obstacle.polygon.points[i].z
+                        );
+                        corners_3d[i] = ot->transform * local_pos;
+                    }
+
+                    // Choose color based on obstacle type
+                    Eigen::Vector3f box_color;
+                    if (obstacle.type == "CAR")
+                    {
+                        box_color = Eigen::Vector3f(0.19f, 0.1f, 0.88f);
+                    }
+                    else if (obstacle.type == "PEDESTRIAN")
+                    {
+                        box_color = Eigen::Vector3f(1.0f, 0.8f, 0.0f); // Orange for pedestrians
+                    }
+                    else if (obstacle.type == "CYCLIST")
+                    {
+                        box_color = Eigen::Vector3f(0.8f, 0.0f, 1.0f); // Purple for cyclists
+                    }
+                    else
+                    {
+                        box_color = Eigen::Vector3f(0.0f, 0.0f, 1.0f); // Blue for unknown
+                    }
+
+                    // Add bounding box to renderer with gradient effect (colorMode = 1)
+                    if (box_renderer_)
+                    {
+                        box_renderer_->addBoundingBox(
+                            corners_3d,  // All 8 corners in world space
+                            box_color,   // Color
+                            0.6f,        // Alpha
+                            1,            // colorMode (gradient effect)
+                            -0.5f,          // z_offset
+                            0.5f          // icon_z_offset
+                        );
+                    }
+                }
+            }
+        }
+
+        shader.use();
+
+        // ============================================
+        // Render boxes with gradient walls
+        // ============================================
+        if (box_renderer_)
+        {
+            box_renderer_->renderBoxes(view, projection);
         }
     }
 
@@ -2751,7 +3160,21 @@ public:
                     }
                 }
 
-                std::cout << "[MA_CB] " << topic << " → " << msg->markers.size() << " markers\n";
+                // Debug: Show frame_id and transform status
+                static int callback_counter = 0;
+                if (callback_counter++ % 60 == 0) // Every 60th message
+                {
+                    std::cout << "[MA_CB] " << topic << " → " << msg->markers.size() << " markers"
+                              << " (frame: " << mt->frame_id << ")";
+                    if (mt->transform.matrix() == Eigen::Isometry3f::Identity().matrix())
+                    {
+                        std::cout << " ⚠️ Using identity transform!" << std::endl;
+                    }
+                    else
+                    {
+                        std::cout << " ✅ Has transform" << std::endl;
+                    }
+                }
             });
 
         // store the new topic
@@ -2895,6 +3318,79 @@ public:
         std::cout << red << "Path topic not found: " << topic << reset << std::endl;
     }
 
+    // ================================
+    // ROS2 Obstacle topic
+    // ================================
+
+    void addObstacleTopic(const std::string &topic)
+    {
+        // avoid duplicates
+        {
+            std::lock_guard lk(obstacle_topics_mutex_);
+            for (auto &ot_ptr : obstacle_topics_)
+                if (ot_ptr->topic_name == topic)
+                    return;
+        }
+
+        // create a new ObstacleTopic
+        auto ot = std::make_shared<ObstacleTopic>();
+        ot->topic_name = topic;
+        ot->obstacle_collection = std::make_shared<obstacles_information_msgs::msg::ObstacleCollection>();
+
+        // subscription callback
+        ot->sub = node_->create_subscription<obstacles_information_msgs::msg::ObstacleCollection>(
+            topic, rclcpp::QoS(10),
+            [this, ot, topic](obstacles_information_msgs::msg::ObstacleCollection::SharedPtr msg)
+            {
+                {
+                    std::lock_guard lk(obstacle_topics_mutex_);
+                    ot->obstacle_collection = msg;
+                    ot->last_update = std::chrono::steady_clock::now();
+
+                    if (!msg->obstacles.empty())
+                    {
+                        ot->frame_id = msg->header.frame_id;
+
+                        try
+                        {
+                            auto tf_stamped = tf_buffer_->lookupTransform(
+                                fixed_frame_, ot->frame_id, tf2::TimePointZero);
+                            ot->transform = toEigen(tf_stamped.transform);
+                        }
+                        catch (...)
+                        { /* leave identity */
+                        }
+                    }
+                }
+
+                // std::cout << "[OBSTACLE_CB] " << topic << " → " << msg->obstacles.size() << " obstacles\n";
+            });
+
+        // store the new topic
+        {
+            std::lock_guard lk(obstacle_topics_mutex_);
+            obstacle_topics_.push_back(ot);
+        }
+
+        std::cout << green << "✅ Subscribed to Obstacle topic: " << topic << reset << std::endl;
+    }
+
+    void removeObstacleTopic(const std::string &topic)
+    {
+        std::lock_guard lk(obstacle_topics_mutex_);
+        for (auto it = obstacle_topics_.begin(); it != obstacle_topics_.end(); ++it)
+        {
+            if ((*it)->topic_name == topic)
+            {
+                std::cout << red << "Removing obstacle topic: " << topic << reset << std::endl;
+                (*it)->sub.reset();
+                obstacle_topics_.erase(it);
+                return;
+            }
+        }
+        std::cout << red << "Obstacle topic not found: " << topic << reset << std::endl;
+    }
+
 private:
     // color for the terminals
     std::string green = "\033[1;32m";
@@ -2985,6 +3481,10 @@ private:
     std::vector<std::shared_ptr<PathTopic>> path_topics_;
     std::mutex path_topics_mutex_;
 
+    // Store obstacle topics
+    std::vector<std::shared_ptr<ObstacleTopic>> obstacle_topics_;
+    std::mutex obstacle_topics_mutex_;
+
     // lights
     std::chrono::steady_clock::time_point blink_start_ = std::chrono::steady_clock::now();
 
@@ -3015,6 +3515,10 @@ private:
     // mesh glb
     PlyMesh loaded_mesh_glb;
     bool mesh_glb_loaded = false;
+
+    // Box rendering
+    std::unique_ptr<glk::BoxRenderer> box_renderer_;
+
 
     // Mapbox map variables
     std::unique_ptr<mbgl::SimpleMapSnapshotter> map_snapshotter_;

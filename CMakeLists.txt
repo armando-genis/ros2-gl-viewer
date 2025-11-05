@@ -33,6 +33,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(obstacles_information_msgs REQUIRED)
 
 
 # load 3d graphics libraries (Assimp)
@@ -209,6 +210,7 @@ set(GLK_SOURCES
   src/glk/LaneletLoader.cpp
   src/glk/ThickLines.cpp
   src/glk/MapBoxRendering.cpp
+  src/glk/BoxRendering.cpp
 )
 
 # List all source files in guik directory
@@ -259,6 +261,7 @@ ament_target_dependencies(pointcloud_viewer
   sensor_msgs
   geometry_msgs
   nav_msgs
+  obstacles_information_msgs
 )
 
 # Link libraries
@@ -315,6 +318,14 @@ add_custom_command(TARGET pointcloud_viewer POST_BUILD
   COMMENT "Copying appicon.png to build directory"
 )
 
+# Copy the obstacle texture for box rendering
+add_custom_command(TARGET pointcloud_viewer POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+  ${CMAKE_SOURCE_DIR}/src/car_icon.png
+  ${CMAKE_BINARY_DIR}/car_icon.png
+  COMMENT "Copying car_icon.png to build directory"
+)
+
 # Copy the Perlin noise texture for cloud rendering
 add_custom_command(TARGET pointcloud_viewer POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy
@@ -330,7 +341,6 @@ add_custom_command(TARGET pointcloud_viewer POST_BUILD
   ${CMAKE_BINARY_DIR}/perlin257.png
   COMMENT "Copying perlin257.png to build directory"
 )
-
 
 # Install the executable
 install(TARGETS pointcloud_viewer
