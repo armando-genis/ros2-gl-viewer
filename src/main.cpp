@@ -50,6 +50,7 @@
 #include "glk/modelUpload.hpp"
 #include "glk/ThickLines.hpp"
 #include "glk/BoxRendering.hpp"
+#include "glk/VideoRecorder.hpp"
 
 #include <guik/gl_canvas.hpp>
 #include <guik/camera_control.hpp>
@@ -168,6 +169,11 @@ public:
 
     ~Ros2GLViewer()
     {
+        // Stop recording if active
+        if (is_recording_ && video_recorder_) {
+            video_recorder_->stopRecording();
+        }
+        video_recorder_.reset();
 
         text_renderer_.cleanupTextRendering();
         path_renderer_.cleanupPathRendering();
@@ -609,6 +615,63 @@ public:
         ImGui::Text("Rendering Distance:");
         ImGui::SliderFloat("Far Clipping Plane", &far_clipping_distance_, 100.0f, 50000.0f, "%.0f");
         ImGui::Text("Objects beyond %.0f units will not be rendered", far_clipping_distance_);
+
+        // ============================================
+        // Video Recording Control
+        // ============================================
+        ImGui::Separator();
+        ImGui::Text("Video Recording:");
+        
+        if (!video_recorder_) {
+            video_recorder_ = std::make_unique<VideoRecorder>();
+        }
+        
+        if (is_recording_) {
+            ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "🔴 RECORDING");
+            ImGui::SameLine();
+            ImGui::Text("Frames: %zu", video_recorder_->getFrameCount());
+            
+            if (ImGui::Button("Stop Recording")) {
+                std::string filename(recording_filename_);
+                video_recorder_->stopRecording();
+                is_recording_ = false;
+                std::cout << green << "Recording stopped. File: " << filename << reset << std::endl;
+            }
+        } else {
+            ImGui::InputText("Output File", recording_filename_, sizeof(recording_filename_));
+            ImGui::SliderInt("FPS", &recording_fps_, 15, 60);
+            
+            // Quality slider with descriptive labels
+            ImGui::Text("Quality (CRF):");
+            ImGui::SliderInt("##quality", &recording_quality_, 18, 28);
+            if (recording_quality_ <= 20) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "High Quality");
+            } else if (recording_quality_ <= 23) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Medium Quality");
+            } else {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Lower Quality");
+            }
+            ImGui::Text("  Lower = Better Quality (larger file) | Higher = Lower Quality (smaller file)");
+            
+            if (ImGui::Button("Start Recording")) {
+                auto fb_size = framebuffer_size();
+                std::string filename(recording_filename_);
+                // Note: VideoRecorder will automatically adjust dimensions to be even
+                if (video_recorder_->startRecording(filename, fb_size.x(), fb_size.y(), recording_fps_, recording_quality_)) {
+                    is_recording_ = true;
+                    // Get the actual recording dimensions (may be adjusted)
+                    int rec_width = (fb_size.x() / 2) * 2;
+                    int rec_height = (fb_size.y() / 2) * 2;
+                    std::cout << green << "Started recording to: " << filename 
+                              << " (" << rec_width << "x" << rec_height << "@" << recording_fps_ << "fps, CRF=" << recording_quality_ << ")" << reset << std::endl;
+                } else {
+                    std::cerr << red << "Failed to start recording" << reset << std::endl;
+                }
+            }
+        }
 
         // ============================================
         // Split-screen mode control
@@ -2368,6 +2431,30 @@ public:
         // 9) unbind & blit
         main_canvas_->unbind();
         main_canvas_->render_to_screen();
+
+        // 10) Capture frame for video recording if recording
+        if (is_recording_ && video_recorder_) {
+            auto fb_size = framebuffer_size();
+            
+            // Get the recording dimensions (already adjusted to be even)
+            // We need to read the full framebuffer and then crop/resize if needed
+            std::vector<uint8_t> pixels(fb_size.x() * fb_size.y() * 3);
+            
+            // Read pixels from default framebuffer (after rendering to screen)
+            glReadPixels(0, 0, fb_size.x(), fb_size.y(), GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+            
+            // Flip vertically (OpenGL reads from bottom-left, but video expects top-left)
+            std::vector<uint8_t> flipped_pixels(fb_size.x() * fb_size.y() * 3);
+            for (int y = 0; y < fb_size.y(); ++y) {
+                int src_y = fb_size.y() - 1 - y;
+                memcpy(&flipped_pixels[y * fb_size.x() * 3],
+                       &pixels[src_y * fb_size.x() * 3],
+                       fb_size.x() * 3);
+            }
+            
+            // Pass the framebuffer dimensions so VideoRecorder can handle cropping if needed
+            video_recorder_->addFrame(flipped_pixels.data(), fb_size.x(), fb_size.y());
+        }
     }
 
     void framebuffer_size_callback(const Eigen::Vector2i &size) override
@@ -3520,6 +3607,12 @@ private:
     // Box rendering
     std::unique_ptr<glk::BoxRenderer> box_renderer_;
 
+    // Video recording
+    std::unique_ptr<VideoRecorder> video_recorder_;
+    bool is_recording_ = false;
+    char recording_filename_[256] = "recording.mp4";
+    int recording_fps_ = 30;
+    int recording_quality_ = 18; // CRF value: 18 = high quality, 23 = medium, 28 = lower quality
 
     // Mapbox map variables
     std::unique_ptr<mbgl::SimpleMapSnapshotter> map_snapshotter_;

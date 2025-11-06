@@ -22,6 +22,9 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(ICU REQUIRED icu-uc icu-i18n)
 pkg_check_modules(LIBUV REQUIRED libuv)
 
+# FFmpeg for video recording
+pkg_check_modules(LIBAV REQUIRED libavcodec libavformat libavutil libswscale)
+
 # ROS2 dependencies - without using ament
 find_package(rclcpp REQUIRED)
 find_package(pcl_conversions REQUIRED)
@@ -211,6 +214,7 @@ set(GLK_SOURCES
   src/glk/ThickLines.cpp
   src/glk/MapBoxRendering.cpp
   src/glk/BoxRendering.cpp
+  src/glk/VideoRecorder.cpp
 )
 
 # List all source files in guik directory
@@ -244,6 +248,7 @@ target_compile_definitions(pointcloud_viewer PRIVATE
 
 target_include_directories(pointcloud_viewer PRIVATE
   ${LIBUV_INCLUDE_DIRS}
+  ${LIBAV_INCLUDE_DIRS}
 )
 
 
@@ -295,6 +300,9 @@ target_link_libraries(pointcloud_viewer
   ${ZLIB_LIBRARIES}
   ${ICU_LIBRARIES}
   curl
+  
+  # FFmpeg for video recording
+  ${LIBAV_LIBRARIES}
   
   # System libraries
   GL
